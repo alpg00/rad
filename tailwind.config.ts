@@ -27,6 +27,10 @@ export default {
           DEFAULT: "hsl(var(--secondary))",
           foreground: "hsl(var(--secondary-foreground))",
         },
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          foreground: "hsl(var(--success-foreground))",
+        },
         destructive: {
           DEFAULT: "hsl(var(--destructive))",
           foreground: "hsl(var(--destructive-foreground))",
@@ -57,6 +61,27 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        gain: {
+          DEFAULT: "hsl(var(--gain))",
+          foreground: "hsl(var(--gain-foreground))",
+        },
+        loss: {
+          DEFAULT: "hsl(var(--loss))",
+          foreground: "hsl(var(--loss-foreground))",
+        },
+        "chart-grid": "hsl(var(--chart-grid))",
+        "chart-line": "hsl(var(--chart-line))",
+        "metric-card": "hsl(var(--metric-card))",
+      },
+      backgroundImage: {
+        "gradient-primary": "var(--gradient-primary)",
+        "gradient-success": "var(--gradient-success)",
+        "gradient-destructive": "var(--gradient-destructive)",
+      },
+      boxShadow: {
+        "glow-primary": "0 0 20px hsl(var(--glow-primary) / 0.3)",
+        "glow-success": "0 0 20px hsl(var(--glow-success) / 0.3)",
+        "glow-destructive": "0 0 20px hsl(var(--glow-destructive) / 0.3)",
       },
       borderRadius: {
         lg: "var(--radius)",
