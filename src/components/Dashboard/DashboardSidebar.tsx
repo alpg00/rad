@@ -32,6 +32,8 @@ const DashboardSidebar = ({
         "Quantum Capital Fund",
         "Apex Growth Partners",
         "Horizon Ventures",
+        "Custodian 1",
+        "Custodian 2",
       ];
 
       // Fetch all clients (may return [] due to RLS when unauthenticated)
