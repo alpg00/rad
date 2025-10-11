@@ -44,8 +44,10 @@ serve(async (req) => {
     // Resolve client
     const { data: client, error: cErr } = await admin
       .from("clients")
-      .select("id")
+      .select("id, created_at")
       .ilike("name", clientName)
+      .order("created_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
     if (cErr || !client) {
       return new Response(JSON.stringify({ error: "Client not found" }), {
