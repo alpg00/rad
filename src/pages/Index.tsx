@@ -6,10 +6,12 @@ import RiskMetrics from "@/components/Dashboard/RiskMetrics";
 import ExcelUpload from "@/components/Dashboard/ExcelUpload";
 import { Button } from "@/components/ui/button";
 import { Menu } from "lucide-react";
+import type { ClientSummary } from "@/types/portfolio";
 
 const Index = () => {
   const [selectedClient, setSelectedClient] = useState("Quantum Capital Fund");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [clients, setClients] = useState<ClientSummary[]>([]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -44,25 +46,29 @@ const Index = () => {
           selectedClient={selectedClient}
           onSelectClient={setSelectedClient}
           isOpen={sidebarOpen}
+          onClientsLoaded={setClients}
         />
 
         {/* Main Content */}
         <main className="flex-1 p-6 space-y-6">
           {/* P&L Tracker */}
-          <PLTracker />
+          <PLTracker clientName={selectedClient} />
 
           {/* Chart and Risk Metrics */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
-              <PositionChart />
+              <PositionChart clientName={selectedClient} />
             </div>
             <div>
-              <RiskMetrics />
+              <RiskMetrics clientName={selectedClient} />
             </div>
           </div>
 
           {/* Excel Upload */}
-          <ExcelUpload onClientChange={setSelectedClient} />
+          <ExcelUpload 
+            onClientChange={setSelectedClient} 
+            clients={clients}
+          />
         </main>
       </div>
     </div>

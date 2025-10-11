@@ -1,31 +1,95 @@
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import { TrendingUp, TrendingDown } from "lucide-react";
-
-interface Client {
-  name: string;
-  performance: number;
-  value: string;
-}
-
-const clients: Client[] = [
-  { name: "Quantum Capital Fund", performance: 2.4, value: "$12.4M" },
-  { name: "Apex Growth Partners", performance: -0.8, value: "$8.2M" },
-  { name: "Horizon Ventures", performance: 1.2, value: "$15.6M" },
-  { name: "Sterling Asset Management", performance: 3.1, value: "$22.8M" },
-  { name: "Pinnacle Investment Group", performance: -1.5, value: "$9.7M" },
-];
+import { TrendingUp, TrendingDown, Loader2 } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import type { ClientSummary } from "@/types/portfolio";
 
 interface DashboardSidebarProps {
   selectedClient: string;
   onSelectClient: (client: string) => void;
   isOpen: boolean;
+  onClientsLoaded: (clients: ClientSummary[]) => void;
 }
 
 const DashboardSidebar = ({
   selectedClient,
   onSelectClient,
   isOpen,
+  onClientsLoaded,
 }: DashboardSidebarProps) => {
+  const [clients, setClients] = useState<ClientSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadClients();
+  }, []);
+
+  const loadClients = async () => {
+    try {
+      setLoading(true);
+      
+      // Fetch all clients
+      const { data: clientsData, error: clientsError } = await supabase
+        .from('clients')
+        .select('*')
+        .order('name');
+
+      if (clientsError) throw clientsError;
+
+      // Fetch portfolio analysis for each client
+      const clientSummaries: ClientSummary[] = await Promise.all(
+        (clientsData || []).map(async (client) => {
+          try {
+            const { data: analysis, error } = await supabase.functions.invoke('analyze-portfolio', {
+              body: { clientName: client.name }
+            });
+
+            if (error) throw error;
+
+            const totalValue = analysis?.totals?.market_value || 0;
+            const totalPnL = analysis?.totals?.pnl || 0;
+            const totalCost = totalValue - totalPnL;
+            const performance = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
+
+            return {
+              ...client,
+              performance: parseFloat(performance.toFixed(2)),
+              value: `$${(totalValue / 1000000).toFixed(1)}M`,
+            };
+          } catch (error) {
+            console.error(`Error loading portfolio for ${client.name}:`, error);
+            return {
+              ...client,
+              performance: 0,
+              value: "$0.0M",
+            };
+          }
+        })
+      );
+
+      setClients(clientSummaries);
+      onClientsLoaded(clientSummaries);
+    } catch (error) {
+      console.error('Error loading clients:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <aside
+        className={cn(
+          "w-80 border-r border-border bg-card/30 backdrop-blur-sm transition-all duration-300",
+          "lg:translate-x-0 flex items-center justify-center",
+          isOpen ? "translate-x-0" : "-translate-x-full absolute lg:relative h-full z-40"
+        )}
+      >
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </aside>
+    );
+  }
+
   return (
     <aside
       className={cn(
@@ -39,7 +103,7 @@ const DashboardSidebar = ({
         <div className="space-y-2">
           {clients.map((client) => (
             <button
-              key={client.name}
+              key={client.id}
               onClick={() => onSelectClient(client.name)}
               className={cn(
                 "w-full p-4 rounded-lg border transition-all duration-200",

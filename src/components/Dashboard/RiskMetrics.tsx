@@ -1,36 +1,95 @@
+import { useState, useEffect } from "react";
+import { AlertTriangle, TrendingUp, Activity, Loader2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
-import { AlertTriangle, Shield, TrendingUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
 
 interface Metric {
   label: string;
   value: string;
   status: "good" | "warning" | "alert";
-  icon: typeof Shield;
+  icon: React.ElementType;
 }
 
-const metrics: Metric[] = [
-  {
-    label: "VaR (95%)",
-    value: "$125K",
-    status: "good",
-    icon: Shield,
-  },
-  {
-    label: "Sharpe Ratio",
-    value: "1.82",
-    status: "good",
-    icon: TrendingUp,
-  },
-  {
-    label: "Max Drawdown",
-    value: "-8.4%",
-    status: "warning",
-    icon: AlertTriangle,
-  },
-];
+interface RiskMetricsProps {
+  clientName: string;
+}
 
-const RiskMetrics = () => {
+const RiskMetrics = ({ clientName }: RiskMetricsProps) => {
+  const [metrics, setMetrics] = useState<Metric[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    calculateRiskMetrics();
+  }, [clientName]);
+
+  const calculateRiskMetrics = async () => {
+    try {
+      setLoading(true);
+      const { data: analysis, error } = await supabase.functions.invoke('analyze-portfolio', {
+        body: { clientName }
+      });
+
+      if (error) throw error;
+
+      const positions = analysis?.positions || [];
+      const totalValue = analysis?.totals?.market_value || 0;
+      
+      // Calculate VaR (95% confidence, simplified)
+      const pnlValues = positions.map((p: any) => p.pnl || 0);
+      const sortedPnL = [...pnlValues].sort((a, b) => a - b);
+      const varIndex = Math.floor(sortedPnL.length * 0.05);
+      const var95 = Math.abs(sortedPnL[varIndex] || 0);
+
+      // Calculate Sharpe Ratio (simplified using P&L)
+      const avgReturn = pnlValues.reduce((a, b) => a + b, 0) / pnlValues.length;
+      const variance = pnlValues.reduce((sum, val) => sum + Math.pow(val - avgReturn, 2), 0) / pnlValues.length;
+      const stdDev = Math.sqrt(variance);
+      const sharpeRatio = stdDev > 0 ? avgReturn / stdDev : 0;
+
+      // Calculate Max Drawdown
+      const totalPnL = analysis?.totals?.pnl || 0;
+      const totalCost = totalValue - totalPnL;
+      const maxDrawdown = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
+
+      setMetrics([
+        {
+          label: "VaR (95%)",
+          value: `$${(var95 / 1000).toFixed(1)}K`,
+          status: var95 > totalValue * 0.05 ? "warning" : "good",
+          icon: Activity,
+        },
+        {
+          label: "Sharpe Ratio",
+          value: sharpeRatio.toFixed(2),
+          status: sharpeRatio > 1 ? "good" : sharpeRatio > 0.5 ? "warning" : "alert",
+          icon: TrendingUp,
+        },
+        {
+          label: "Max Drawdown",
+          value: `${maxDrawdown.toFixed(1)}%`,
+          status: Math.abs(maxDrawdown) > 10 ? "alert" : Math.abs(maxDrawdown) > 5 ? "warning" : "good",
+          icon: AlertTriangle,
+        },
+      ]);
+    } catch (error) {
+      console.error('Error calculating risk metrics:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Card className="p-6 bg-gradient-to-br from-card to-metric-card border-border">
+        <h3 className="text-lg font-semibold mb-4">Risk Metrics</h3>
+        <div className="flex items-center justify-center h-48">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card className="p-6 bg-gradient-to-br from-card to-metric-card border-border h-full">
       <h3 className="text-lg font-semibold mb-4">Risk Metrics</h3>
@@ -86,7 +145,7 @@ const RiskMetrics = () => {
             <div className="flex items-center gap-2">
               <div className="h-2 w-2 rounded-full bg-loss animate-pulse" />
               <p className="text-sm text-foreground">
-                Portfolio concentration exceeds 15%
+                Portfolio concentration monitored
               </p>
             </div>
           </div>
