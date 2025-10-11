@@ -9,7 +9,7 @@ import {
   Tooltip,
 } from "recharts";
 import { Loader2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface DataPoint {
   time: string;
@@ -41,11 +41,10 @@ const PositionChart = ({ clientName }: PositionChartProps) => {
     
     // Get current portfolio value
     try {
-      const { data: analysis, error } = await supabase.functions.invoke('analyze-portfolio', {
-        body: { clientName }
+      const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+        method: 'POST',
+        body: JSON.stringify({ clientName })
       });
-
-      if (error) throw error;
 
       const currentValue = analysis?.totals?.market_value || 0;
       
@@ -69,11 +68,10 @@ const PositionChart = ({ clientName }: PositionChartProps) => {
 
   const updateData = async () => {
     try {
-      const { data: analysis, error } = await supabase.functions.invoke('analyze-portfolio', {
-        body: { clientName }
+      const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+        method: 'POST',
+        body: JSON.stringify({ clientName })
       });
-
-      if (error) throw error;
 
       const currentValue = analysis?.totals?.market_value || 0;
       

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown, Loader2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface PLTrackerProps {
   clientName: string;
@@ -28,11 +28,10 @@ const PLTracker = ({ clientName }: PLTrackerProps) => {
   const loadPortfolio = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase.functions.invoke('analyze-portfolio', {
-        body: { clientName }
+      const data = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+        method: 'POST',
+        body: JSON.stringify({ clientName })
       });
-
-      if (error) throw error;
 
       const totalPnL = data?.totals?.pnl || 0;
       const totalValue = data?.totals?.market_value || 0;

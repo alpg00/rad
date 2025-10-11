@@ -11,7 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { API_ENDPOINTS } from "@/config/api";
 
 interface ExcelUploadProps {
   onClientChange: (client: string) => void;
@@ -47,36 +47,35 @@ const ExcelUpload = ({ onClientChange, clients }: ExcelUploadProps) => {
       return;
     }
 
+    if (!selectedClient) {
+      toast.error("Please select a client first");
+      return;
+    }
+
     setIsUploading(true);
     
     try {
-      // Upload file to Supabase storage
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${selectedClient.replace(/\s+/g, '_')}_${Date.now()}.${fileExt}`;
-      const filePath = `${fileName}`;
+      // Create FormData to send file to Python backend
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('clientName', selectedClient);
 
-      const { error: uploadError } = await supabase.storage
-        .from('portfolio-uploads')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
-
-      if (uploadError) throw uploadError;
-
-      // Call the ingest-positions function
-      const { data, error: functionError } = await supabase.functions.invoke('ingest-positions', {
-        body: { 
-          clientName: selectedClient,
-          filePath: filePath
-        }
+      // Call Python backend API
+      const response = await fetch(API_ENDPOINTS.uploadExcel, {
+        method: 'POST',
+        body: formData,
       });
 
-      if (functionError) throw functionError;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(error.error || 'Failed to process file');
+      }
+
+      const data = await response.json();
 
       setUploadedFile(file.name);
       toast.success("Positions ingested successfully", {
-        description: `Uploaded ${file.name} for ${selectedClient}. ${data?.inserted || 0} positions added.`,
+        description: `Uploaded ${file.name} for ${selectedClient}.`,
       });
     } catch (error: any) {
       console.error('Upload error:', error);

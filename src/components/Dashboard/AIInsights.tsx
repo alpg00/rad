@@ -2,9 +2,9 @@ import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Loader2, Sparkles, RefreshCw } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface AIInsightsProps {
   clientName: string;
@@ -214,52 +214,13 @@ const AIInsights = ({ clientName }: AIInsightsProps) => {
         return;
       }
 
-      // For real custodians (Custodian 1, Custodian 2), generate AI insights
-      // First get portfolio data
-      const { data: portfolioData, error: portfolioError } = await supabase.functions.invoke(
-        "analyze-portfolio",
-        {
-          body: { clientName },
-        }
-      );
+      // For real custodians (Custodian 1, Custodian 2), call Python backend
+      const data = await apiCall<any>(API_ENDPOINTS.getAIInsights, {
+        method: 'POST',
+        body: JSON.stringify({ clientName })
+      });
 
-      if (portfolioError) throw portfolioError;
-
-      if (!portfolioData?.positions || portfolioData.positions.length === 0) {
-        setAnalysis("No positions available for analysis. Please upload portfolio data to generate AI insights.");
-        return;
-      }
-
-      // Then get AI insights
-      const { data: insightsData, error: insightsError } = await supabase.functions.invoke(
-        "analyze-portfolio-insights",
-        {
-          body: {
-            portfolioData,
-            clientName,
-          },
-        }
-      );
-
-      if (insightsError) {
-        if (insightsError.message?.includes("429")) {
-          toast.error("Rate limit reached", {
-            description: "Please wait a moment before refreshing analysis.",
-          });
-          setAnalysis("⏳ Rate limit reached. Please wait before requesting another analysis.");
-          return;
-        }
-        if (insightsError.message?.includes("402")) {
-          toast.error("AI credits exhausted", {
-            description: "Please add funds to continue using AI analysis.",
-          });
-          setAnalysis("💳 AI credits exhausted. Please top up your workspace credits.");
-          return;
-        }
-        throw insightsError;
-      }
-
-      setAnalysis(insightsData.analysis || "No insights generated.");
+      setAnalysis(data.insights || "No insights generated.");
     } catch (error) {
       console.error("Error loading AI insights:", error);
       toast.error("Failed to load AI insights", {

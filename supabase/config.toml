@@ -1,10 +1,1 @@
 project_id = "xttdmeztqqxpzlycnhog"
-
-[functions.ingest-positions]
-verify_jwt = false
-
-[functions.analyze-portfolio]
-verify_jwt = false
-
-[functions.analyze-portfolio-insights]
-verify_jwt = false

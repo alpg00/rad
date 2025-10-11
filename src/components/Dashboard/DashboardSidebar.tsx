@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown, Loader2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
 import type { ClientSummary } from "@/types/portfolio";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface DashboardSidebarProps {
   selectedClient: string;
@@ -36,28 +36,30 @@ const DashboardSidebar = ({
         "Custodian 2",
       ];
 
-      // Fetch all clients (may return [] due to RLS when unauthenticated)
-      const { data: clientsData } = await supabase
-        .from('clients')
-        .select('*')
-        .order('name');
-
-      const baseClients = (clientsData && clientsData.length > 0)
-        ? clientsData
-        : demoNames.map((name, idx) => ({
-            id: `demo-${idx}`,
-            name,
-            email: undefined,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          }));
+      // Try to fetch clients from backend
+      let baseClients;
+      try {
+        baseClients = await apiCall<any[]>(API_ENDPOINTS.getClients, {
+          method: 'GET'
+        });
+      } catch {
+        // Fallback to demo data
+        baseClients = demoNames.map((name, idx) => ({
+          id: `demo-${idx}`,
+          name,
+          email: undefined,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }));
+      }
 
       // Fetch portfolio analysis for each client
       const clientSummaries: ClientSummary[] = await Promise.all(
         baseClients.map(async (client) => {
           try {
-            const { data: analysis } = await supabase.functions.invoke('analyze-portfolio', {
-              body: { clientName: client.name }
+            const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+              method: 'POST',
+              body: JSON.stringify({ clientName: client.name })
             });
 
             const totalValue = analysis?.totals?.market_value || 0;

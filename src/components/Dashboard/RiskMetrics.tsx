@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { AlertTriangle, TrendingUp, Activity, Loader2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { supabase } from "@/integrations/supabase/client";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface Metric {
   label: string;
@@ -26,11 +26,10 @@ const RiskMetrics = ({ clientName }: RiskMetricsProps) => {
   const calculateRiskMetrics = async () => {
     try {
       setLoading(true);
-      const { data: analysis, error } = await supabase.functions.invoke('analyze-portfolio', {
-        body: { clientName }
+      const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+        method: 'POST',
+        body: JSON.stringify({ clientName })
       });
-
-      if (error) throw error;
 
       const positions = analysis?.positions || [];
       const totalValue = analysis?.totals?.market_value || 0;
