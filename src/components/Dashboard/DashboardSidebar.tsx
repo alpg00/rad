@@ -99,7 +99,7 @@ const DashboardSidebar = ({
       )}
     >
       <div className="p-6 space-y-4">
-        <h2 className="text-lg font-semibold text-foreground">Client Portfolios</h2>
+        <h2 className="text-lg font-semibold text-foreground">Custodian Portfolios</h2>
         <div className="space-y-2">
           {clients.map((client) => (
             <button
