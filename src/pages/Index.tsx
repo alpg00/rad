@@ -3,6 +3,7 @@ import DashboardSidebar from "@/components/Dashboard/DashboardSidebar";
 import PLTracker from "@/components/Dashboard/PLTracker";
 import PositionChart from "@/components/Dashboard/PositionChart";
 import RiskMetrics from "@/components/Dashboard/RiskMetrics";
+import AIInsights from "@/components/Dashboard/AIInsights";
 import ExcelUpload from "@/components/Dashboard/ExcelUpload";
 import { Button } from "@/components/ui/button";
 import { Menu } from "lucide-react";
@@ -63,6 +64,9 @@ const Index = () => {
               <RiskMetrics clientName={selectedClient} />
             </div>
           </div>
+
+          {/* AI Insights */}
+          <AIInsights clientName={selectedClient} />
 
           {/* Excel Upload */}
           <ExcelUpload 
