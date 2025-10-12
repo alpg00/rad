@@ -7,12 +7,14 @@ import AIInsights from "@/components/Dashboard/AIInsights";
 import ExcelUpload from "@/components/Dashboard/ExcelUpload";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
+import { useWebSocket } from "@/hooks/useWebSocket";
 import type { ClientSummary } from "@/types/portfolio";
 
 const CustodianDashboard = () => {
   const { clientName } = useParams<{ clientName: string }>();
   const navigate = useNavigate();
   const decodedClientName = decodeURIComponent(clientName || "");
+  const { portfolio } = useWebSocket();
   const [clients] = useState<ClientSummary[]>([
     { id: "1", name: decodedClientName, performance: 0, value: "$0", email: "", created_at: "", updated_at: "" }
   ]);
@@ -43,15 +45,15 @@ const CustodianDashboard = () => {
       {/* Main Content */}
       <main className="p-6 space-y-6 max-w-7xl mx-auto">
         {/* P&L Tracker */}
-        <PLTracker clientName={decodedClientName} />
+        <PLTracker data={portfolio} />
 
         {/* Chart and Risk Metrics */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
-            <PositionChart clientName={decodedClientName} />
+            <PositionChart data={portfolio} />
           </div>
           <div>
-            <RiskMetrics clientName={decodedClientName} />
+            <RiskMetrics data={portfolio} />
           </div>
         </div>
 
