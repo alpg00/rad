@@ -90,7 +90,7 @@ async def start_market_data_stream():
 
             print(f"Attempting to stream market data for symbols: {symbols}")
 
-            async with websockets.connect(url) as ws:
+            async with websockets.connect(url, ping_interval=20) as ws:
                 # 1. Authenticate with Alpaca
                 print("Authenticating with Alpaca...")
                 await ws.send(json.dumps({

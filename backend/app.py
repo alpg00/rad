@@ -1,4 +1,4 @@
-# RAD backend (Snowflake storage + Alpaca realtime) - CORRECTED & FINAL
+# RAD backend (Snowflake storage + Alpaca realtime) - FINAL & CONSOLIDATED
 from __future__ import annotations
 import os, io, json, time, asyncio, pandas as pd
 import traceback
@@ -11,6 +11,8 @@ import snowflake.connector as sf
 import websockets
 from typing import List, Dict, Optional
 from pathlib import Path
+from openai import OpenAI
+
 
 from market_data import start_market_data_stream, start_position_tracking
 
@@ -85,7 +87,6 @@ def run_sql(sql: str, params=None, fetch=True):
         return [] if fetch else None
 
 def init_schema_if_needed():
-    # (Your existing init_schema_if_needed logic is fine)
     schema_path = Path(__file__).resolve().parent / "rad_schema.sql"
     if not schema_path.exists(): return
     ddl = schema_path.read_text()
@@ -93,22 +94,17 @@ def init_schema_if_needed():
         run_sql(stmt, fetch=False)
 
 def seed_clients_log():
-    # (Your existing seed_clients_log logic is fine)
     rows = run_sql(f"SELECT ID, NAME, TYPE FROM {SF_DATABASE}.{SF_SCHEMA}.CLIENTS")
     print(f"[sf] seeded clients: {len(rows) if rows else 0}")
     for r in (rows or []): print("  -", r[0], r[1], r[2])
 
-# *** FIX 1: Helper function to convert datetime objects to strings ***
 def serialize_rows(rows: list, cols: list) -> List[Dict]:
     """Converts DB rows with datetime objects into JSON-serializable dicts."""
     result = []
     for row in rows:
         row_dict = {}
         for col, val in zip(cols, row):
-            if isinstance(val, datetime):
-                row_dict[col] = val.isoformat()
-            else:
-                row_dict[col] = val
+            row_dict[col] = val.isoformat() if isinstance(val, datetime) else val
         result.append(row_dict)
     return result
 
@@ -122,7 +118,6 @@ async def _flags_data():
     cols = ["SYMBOL","PCT_CHANGE","SOD_PRICE","LAST_PRICE","THRESHOLD_PCT","TS"]
     return serialize_rows(rows, cols)
     
-# (Your other helpers like standardize_df, upsert_positions, etc. are fine)
 CANON_COLS=["ACCOUNT","SYMBOL","QTY","CURRENCY","COST_BASIS","SOD_PRICE"]
 ALIASES={"ACCOUNT":["account","acct","account_id","portfolio","fund_account"],"SYMBOL":["symbol","ticker","secid","ric"],"QTY":["qty","quantity","position","shares","units"],"CURRENCY":["currency","ccy","curr"],"COST_BASIS":["cost_basis","avg_cost","average_cost","cost"],"SOD_PRICE":["sod_price","prev_close","close_price","prior_close"]}
 def standardize_df(df:pd.DataFrame)->pd.DataFrame:
@@ -159,8 +154,7 @@ def evaluate_flags_sql():
     insert_sql=f"INSERT INTO {SF_DATABASE}.{SF_SCHEMA}.FLAGS (SYMBOL,PCT_CHANGE,SOD_PRICE,LAST_PRICE,THRESHOLD_PCT,TS) SELECT p.SYMBOL, CASE WHEN p.SOD_PRICE IS NOT NULL AND p.LAST_PRICE IS NOT NULL AND p.SOD_PRICE<>0 THEN (p.LAST_PRICE-p.SOD_PRICE)/p.SOD_PRICE END AS PCT_CHANGE, p.SOD_PRICE, p.LAST_PRICE, {DROP_THRESHOLD_PCT}, p.LAST_TS FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS p WHERE p.SOD_PRICE IS NOT NULL AND p.LAST_PRICE IS NOT NULL AND p.LAST_PRICE <= p.SOD_PRICE * (1 - {DROP_THRESHOLD_PCT});"
     run_sql(insert_sql, fetch=False)
 def get_symbols():
-    rows = run_sql(f"SELECT DISTINCT SYMBOL FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS WHERE SYMBOL IS NOT NULL")
-    # This corrected line includes the 'for r in rows' loop
+    rows=run_sql(f"SELECT DISTINCT SYMBOL FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS WHERE SYMBOL IS NOT NULL")
     return [r[0] for r in rows] if rows else []
 
 # --- Main WebSocket Endpoint ---
@@ -169,58 +163,94 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await manager.connect(websocket, client_id)
     try:
         print(f"Sending initial state to client {client_id}")
-        initial_snapshot = await _snapshot_data()
-        initial_flags = await _flags_data()
-        
-        # FastAPI's send_json uses a default encoder that handles this correctly,
-        # but calling our helper ensures consistency and prevents future errors.
         await websocket.send_json({
             "type": "initial_state",
-            "snapshot": initial_snapshot,
-            "flags": initial_flags
+            "snapshot": await _snapshot_data(),
+            "flags": await _flags_data()
         })
-        
-        # Keep connection open to listen for client pings
         while True:
             await websocket.receive_text()
-
     except WebSocketDisconnect:
         print(f"Client {client_id} disconnected.")
     finally:
         manager.disconnect(websocket, client_id)
 
 # --- HTTP API Routes ---
-# *** FIX 2: Re-add the missing API routes that were causing 404 errors ***
-
 class ClientRequest(BaseModel):
     clientName: Optional[str] = None
 
 @app.get("/api/clients")
 async def get_clients_api():
     rows = run_sql(f"SELECT ID, NAME, EMAIL, TYPE, CREATED_AT FROM {SF_DATABASE}.{SF_SCHEMA}.CLIENTS ORDER BY NAME")
-    cols = ["id", "name", "email", "type", "created_at"]
-    return serialize_rows(rows, cols)
+    return serialize_rows(rows, ["id", "name", "email", "type", "created_at"])
 
 @app.post("/api/analyze-portfolio")
 async def analyze_portfolio_api(request: ClientRequest):
     snapshot = await _snapshot_data()
-    if request.clientName:
-        snapshot = [p for p in snapshot if p.get("ACCOUNT") == request.clientName]
-    
+    if request.clientName: snapshot = [p for p in snapshot if p.get("ACCOUNT") == request.clientName]
     positions, totals = [], {"market_value": 0.0, "pnl": 0.0}
     for p in snapshot:
-        qty = float(p.get("QTY") or 0)
-        price = float(p.get("LAST_PRICE") or p.get("SOD_PRICE") or 0.0)
-        market_value = qty * price
-        cost_basis = float(p.get("COST_BASIS") or (qty * (p.get("SOD_PRICE") or 0)))
-        pnl = market_value - cost_basis
-        positions.append({"ticker": p.get("SYMBOL"), "quantity": qty, "cost_basis": cost_basis, "price": price, "market_value": market_value, "pnl": pnl})
+        qty, price = float(p.get("QTY") or 0), float(p.get("LAST_PRICE") or p.get("SOD_PRICE") or 0.0)
+        market_value, cost_basis = qty * price, float(p.get("COST_BASIS") or (qty * (p.get("SOD_PRICE") or 0)))
+        positions.append({"ticker": p.get("SYMBOL"), "quantity": qty, "cost_basis": cost_basis, "price": price, "market_value": market_value, "pnl": market_value - cost_basis})
         totals["market_value"] += market_value
-        totals["pnl"] += pnl
+        totals["pnl"] += (market_value - cost_basis)
     return {"positions": positions, "totals": totals}
 
-@app.post("/ingest")
-async def ingest(file: UploadFile = File(...), clientName: str = Form(None)):
+@app.post("/api/portfolio-insights")
+async def get_portfolio_insights(request: ClientRequest):
+    # 1. Fetch portfolio snapshot for the client
+    snapshot = await _snapshot_data()
+    if request.clientName:
+        snapshot = [p for p in snapshot if p.get("ACCOUNT") == request.clientName]
+
+    if not snapshot:
+        return {"insights": {"comment": "No portfolio data found to analyze."}}
+
+    # 2. Check for the OpenAI API Key
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"insights": {"comment": "AI insights are not configured on the server."}}
+
+    try:
+        # 3. Format the data and create the prompt for the LLM
+        client = OpenAI(api_key=api_key)
+
+        # Convert portfolio to a simple string for the prompt
+        portfolio_summary = "\n".join([
+            f"- {p['SYMBOL']}: {p['QTY']} shares @ last price ${p.get('LAST_PRICE', 'N/A')}" for p in snapshot
+        ])
+
+        prompt = f"""
+        You are a financial analyst providing insights for a portfolio management dashboard.
+        Analyze the following portfolio and provide a concise, markdown-formatted report covering these key areas:
+        1.  **Risk Assessment & Recommendations:** Identify key risks (like concentration) and suggest actionable recommendations.
+        2.  **Performance Commentary:** Briefly comment on the portfolio's structure.
+        3.  **Predictions & Trend Analysis:** Offer a brief outlook.
+
+        Keep the entire analysis under 150 words. Be direct and professional.
+
+        Portfolio Data:
+        {portfolio_summary}
+        """
+
+        # 4. Call the LLM
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-4o", # Or "gpt-3.5-turbo"
+        )
+
+        llm_comment = chat_completion.choices[0].message.content
+
+        return {"insights": {"comment": llm_comment}}
+
+    except Exception as e:
+        print(f"Error calling LLM API: {e}")
+        # 5. Return a fallback message on any error
+        return {"insights": {"comment": "No AI insights at this time."}}
+
+@app.post("/api/ingest-positions")
+async def ingest_positions(file: UploadFile = File(...), clientName: str = Form(None)):
     content = await file.read()
     df = pd.read_csv(io.BytesIO(content)) if (file.filename or "").lower().endswith(".csv") else pd.read_excel(io.BytesIO(content))
     std = standardize_df(df)
@@ -236,31 +266,27 @@ async def mock_price_loop():
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         for sym in get_symbols():
             row = run_sql(f"SELECT LAST_PRICE,SOD_PRICE FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS WHERE SYMBOL='{sym}'")
-            lp = row[0][0] if row else None
-            sp = row[0][1] if row and row[0][1] is not None else 100.0
+            lp, sp = (row[0][0] if row else None), (row[0][1] if row and row[0][1] is not None else 100.0)
             price = (lp or sp or 100.0) * (1.001 if int(time.time()) % 2 == 0 else 0.999)
             run_sql(f"UPDATE {SF_DATABASE}.{SF_SCHEMA}.POSITIONS SET LAST_PRICE={price}, LAST_TS=TO_TIMESTAMP_NTZ('{now}') WHERE SYMBOL='{sym}';", fetch=False)
-        
         evaluate_flags_sql()
-        snapshot_data = await _snapshot_data()
-        flags_data = await _flags_data()
-        await manager.broadcast_snapshot(snapshot_data, flags_data)
+        await manager.broadcast_snapshot(await _snapshot_data(), await _flags_data())
 
 # --- Application Startup ---
 async def safe_start_market_stream():
-    try:
-        await start_market_data_stream()
-    except Exception:
-        print("---!!! DETAILED MARKET STREAM CRASH REPORT !!!---"); traceback.print_exc(); print("--------------------------------------------------")
+    try: await start_market_data_stream()
+    except Exception: print("---!!! MARKET STREAM CRASH !!!---"); traceback.print_exc()
 
 @app.on_event("startup")
 async def startup_event():
     print("[app] Starting up...")
     init_schema_if_needed()
     seed_clients_log()
-    asyncio.create_task(safe_start_market_stream())
+    print("Attempting to start market data stream...")
+    # asyncio.create_task(safe_start_market_stream())
+    print("--- REAL MARKET DATA STREAM IS DISABLED FOR DEBUGGING ---")
     asyncio.create_task(start_position_tracking())
     print("[app] Connection monitor is DISABLED.")
     if os.getenv("SKIP_PRICE_LOOP", "0") != "1":
-        print("[app] Starting mock price loop to send data...")
+        print("[app] Starting mock price loop...")
         asyncio.create_task(mock_price_loop())
