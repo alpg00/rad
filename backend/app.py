@@ -159,8 +159,9 @@ def evaluate_flags_sql():
     insert_sql=f"INSERT INTO {SF_DATABASE}.{SF_SCHEMA}.FLAGS (SYMBOL,PCT_CHANGE,SOD_PRICE,LAST_PRICE,THRESHOLD_PCT,TS) SELECT p.SYMBOL, CASE WHEN p.SOD_PRICE IS NOT NULL AND p.LAST_PRICE IS NOT NULL AND p.SOD_PRICE<>0 THEN (p.LAST_PRICE-p.SOD_PRICE)/p.SOD_PRICE END AS PCT_CHANGE, p.SOD_PRICE, p.LAST_PRICE, {DROP_THRESHOLD_PCT}, p.LAST_TS FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS p WHERE p.SOD_PRICE IS NOT NULL AND p.LAST_PRICE IS NOT NULL AND p.LAST_PRICE <= p.SOD_PRICE * (1 - {DROP_THRESHOLD_PCT});"
     run_sql(insert_sql, fetch=False)
 def get_symbols():
-    rows=run_sql(f"SELECT DISTINCT SYMBOL FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS WHERE SYMBOL IS NOT NULL")
-    return[r[0]]if rows else[]
+    rows = run_sql(f"SELECT DISTINCT SYMBOL FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS WHERE SYMBOL IS NOT NULL")
+    # This corrected line includes the 'for r in rows' loop
+    return [r[0] for r in rows] if rows else []
 
 # --- Main WebSocket Endpoint ---
 @app.websocket("/ws/{client_id}")
