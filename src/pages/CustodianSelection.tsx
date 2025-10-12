@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ArrowLeft, Building2, Loader2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface Client {
   id: string;
@@ -21,25 +21,23 @@ const CustodianSelection = () => {
 
   const loadClients = async () => {
     try {
-      const { data, error } = await supabase
-        .from("clients")
-        .select("id, name")
-        .order("name");
+      // Prefer backend API to fetch clients
+      let baseClients = [] as any[];
+      try {
+        baseClients = await apiCall<any[]>(API_ENDPOINTS.getClients, { method: 'GET' });
+      } catch (e) {
+        baseClients = [];
+      }
 
-      if (error) throw error;
-
-      // If no clients in DB, show default custodian options
-      if (!data || data.length === 0) {
+      if (!baseClients || baseClients.length === 0) {
         setClients([
           { id: "custodian-1", name: "Custodian 1" },
           { id: "custodian-2", name: "Custodian 2" },
         ]);
       } else {
-        // Filter to only show "Custodian" clients
-        const custodianClients = data.filter(c => 
-          c.name.toLowerCase().includes("custodian")
-        );
-        setClients(custodianClients.length > 0 ? custodianClients : data);
+        const custodianClients = baseClients.filter((c: any) => (c.name || '').toLowerCase().includes("custodian"));
+        const toSet = custodianClients.length > 0 ? custodianClients : baseClients;
+        setClients(toSet.map((c: any) => ({ id: c.id || c.name, name: c.name })));
       }
     } catch (error) {
       console.error("Error loading clients:", error);

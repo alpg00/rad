@@ -1,5 +1,10 @@
 # RAD Portfolio Management - Python Backend
 
+
+# rad
+RAD (Real time Aggregated Data) gives hedge funds a live, unified view of their true positions and risk across multiple custodians, eliminating stale Excel reports and enabling instant, data-driven decisions when markets move fast.ven
+
+
 This backend handles all data operations for the RAD Portfolio Management system.
 
 ## Features
