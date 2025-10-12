@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown, Loader2 } from "lucide-react";
-import { API_ENDPOINTS, apiCall } from "@/config/api";
+import { supabase } from "@/lib/supabase";
 
 interface PLTrackerProps {
   clientName: string;
@@ -28,14 +28,44 @@ const PLTracker = ({ clientName }: PLTrackerProps) => {
   const loadPortfolio = async () => {
     try {
       setLoading(true);
-      const data = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
-        method: 'POST',
-        body: JSON.stringify({ clientName })
+      
+      // Get client by name
+      const { data: clients } = await supabase
+        .from('clients')
+        .select('id')
+        .eq('name', clientName)
+        .single();
+
+      if (!clients) {
+        setLoading(false);
+        return;
+      }
+
+      // Get positions for client
+      const { data: positions } = await supabase
+        .from('positions')
+        .select('*')
+        .eq('client_id', clients.id);
+
+      // Get market data
+      const { data: marketData } = await supabase
+        .from('market_data')
+        .select('*');
+
+      let totalValue = 0;
+      let totalCost = 0;
+
+      positions?.forEach(position => {
+        const price = marketData?.find(m => m.ticker === position.ticker);
+        const currentPrice = price?.current_price || 0;
+        const marketValue = Number(position.quantity) * Number(currentPrice);
+        const costBasis = Number(position.quantity) * Number(position.cost_basis);
+        
+        totalValue += marketValue;
+        totalCost += costBasis;
       });
 
-      const totalPnL = data?.totals?.pnl || 0;
-      const totalValue = data?.totals?.market_value || 0;
-      const totalCost = totalValue - totalPnL;
+      const totalPnL = totalValue - totalCost;
       const performancePercent = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
 
       setPnl(totalPnL);

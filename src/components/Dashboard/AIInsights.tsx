@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import { Loader2, Sparkles, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
-import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface AIInsightsProps {
   clientName: string;
@@ -214,13 +213,8 @@ const AIInsights = ({ clientName }: AIInsightsProps) => {
         return;
       }
 
-      // For real custodians (Custodian 1, Custodian 2), call Python backend
-      const data = await apiCall<any>(API_ENDPOINTS.getAIInsights, {
-        method: 'POST',
-        body: JSON.stringify({ clientName })
-      });
-
-      setAnalysis(data.insights || "No insights generated.");
+      // For real custodians, use demo insights as fallback
+      setAnalysis("Demo insights not available for this client. Upload position data to generate AI insights.");
     } catch (error) {
       console.error("Error loading AI insights:", error);
       toast.error("Failed to load AI insights", {
