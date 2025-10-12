@@ -58,10 +58,12 @@ const ExcelUpload = ({ onClientChange, clients }: ExcelUploadProps) => {
       // Create FormData to send file to Python backend
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('clientName', selectedClient);
+      
+      // Send clientName as query parameter since backend expects it that way
+      const url = `${API_ENDPOINTS.uploadExcel}?clientName=${encodeURIComponent(selectedClient)}`;
 
       // Call Python backend API
-      const response = await fetch(API_ENDPOINTS.uploadExcel, {
+      const response = await fetch(url, {
         method: 'POST',
         body: formData,
       });

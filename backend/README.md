@@ -1,9 +1,6 @@
 # RAD Portfolio Management - Python Backend
 
-
-# rad
-RAD (Real time Aggregated Data) gives hedge funds a live, unified view of their true positions and risk across multiple custodians, eliminating stale Excel reports and enabling instant, data-driven decisions when markets move fast.ven
-
+RAD (Real time Aggregated Data) gives hedge funds a live, unified view of their true positions and risk across multiple custodians, eliminating stale Excel reports and enabling instant, data-driven decisions when markets move fast.
 
 This backend handles all data operations for the RAD Portfolio Management system.
 
@@ -22,26 +19,15 @@ This backend handles all data operations for the RAD Portfolio Management system
 pip install -r requirements.txt
 ```
 
-2. Configure environment variables (create `.env` file):
-```
-SNOWFLAKE_ACCOUNT=your_account
-SNOWFLAKE_USER=your_user
-SNOWFLAKE_PASSWORD=your_password
-SNOWFLAKE_DATABASE=your_database
-SNOWFLAKE_SCHEMA=your_schema
-SNOWFLAKE_WAREHOUSE=your_warehouse
-
-ALPACA_API_KEY=your_alpaca_key
-ALPACA_SECRET_KEY=your_alpaca_secret
-
-OPENAI_API_KEY=your_openai_key
-```
-
-3. Run the server:
+2. Configure environment variables:
 ```bash
-python backend.py
-# Or
-uvicorn backend:app --reload --port 8000
+cp .env.example .env
+# Edit .env with your actual Snowflake and Alpaca credentials
+```
+
+3. Run the server (requires app.py in the same directory):
+```bash
+uvicorn app:app --reload --port 8000
 ```
 
 ## API Endpoints
