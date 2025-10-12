@@ -1,68 +1,60 @@
-import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown, Loader2 } from "lucide-react";
-import { API_ENDPOINTS, apiCall } from "@/config/api";
-import { useWebSocket } from "@/hooks/useWebSocket";
-import { ConnectionStatus } from "@/components/Dashboard/ConnectionStatus";
 
-interface PLTrackerProps {
-  clientName: string;
-  symbols?: string[];
+// Define the shape of a single position object that this component receives
+interface Position {
+  SYMBOL: string;
+  QTY: number;
+  LAST_PRICE: number | null;
+  SOD_PRICE: number | null; // Start of Day Price
+  COST_BASIS: number | null;
 }
 
-const PLTracker = ({ clientName, symbols = [] }: PLTrackerProps) => {
-  const [pnl, setPnl] = useState(0);
-  const [percentage, setPercentage] = useState(0);
-  const [isPositive, setIsPositive] = useState(true);
-  const [loading, setLoading] = useState(true);
-  const { connected, priceUpdates } = useWebSocket(symbols);
+// The component now only needs one prop: the live data array
+interface PLTrackerProps {
+  data: Position[];
+}
 
-  // Initial load and setup WebSocket subscription
-  useEffect(() => {
-    loadPortfolio();
-  }, [clientName]);
-
-  // Handle real-time price updates
-  useEffect(() => {
-    if (Object.keys(priceUpdates).length > 0) {
-      loadPortfolio();
-    }
-  }, [priceUpdates]);
-
-  const loadPortfolio = async () => {
-    try {
-      setLoading(true);
-      const data = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
-        method: 'POST',
-        body: JSON.stringify({ clientName })
-      });
-
-      const totalPnL = data?.totals?.pnl || 0;
-      const totalValue = data?.totals?.market_value || 0;
-      const totalCost = totalValue - totalPnL;
-      const performancePercent = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
-
-      setPnl(totalPnL);
-      setPercentage(Math.abs(performancePercent));
-      setIsPositive(totalPnL >= 0);
-    } catch (error) {
-      console.error('Error loading P&L:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (loading) {
+const PLTracker = ({ data }: PLTrackerProps) => {
+  // --- 1. Guard Clause ---
+  // If the data hasn't arrived yet from the parent, show a loading state.
+  // This prevents the component from crashing with empty data.
+  if (!data || data.length === 0) {
     return (
       <Card className="p-6 bg-gradient-to-br from-card to-metric-card border-border">
         <div className="flex items-center justify-center h-24">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <span className="ml-4 text-muted-foreground">Loading P&L Data...</span>
         </div>
       </Card>
     );
   }
 
+  // --- 2. Calculate P&L Directly from Props ---
+  // All calculations are done on every render. No complex useEffect or useState needed.
+  const totals = data.reduce(
+    (acc, position) => {
+      const price = position.LAST_PRICE ?? position.SOD_PRICE ?? 0;
+      const marketValue = (position.QTY || 0) * price;
+
+      // Use cost basis if available, otherwise fall back to SOD value
+      const costBasis = position.COST_BASIS ?? (position.QTY || 0) * (position.SOD_PRICE ?? 0);
+      
+      acc.totalMarketValue += marketValue;
+      acc.totalCostBasis += costBasis;
+      
+      return acc;
+    },
+    { totalMarketValue: 0, totalCostBasis: 0 }
+  );
+
+  const totalPnl = totals.totalMarketValue - totals.totalCostBasis;
+  const percentage = totals.totalCostBasis > 0 ? (totalPnl / totals.totalCostBasis) * 100 : 0;
+  const isPositive = totalPnl >= 0;
+
+  // --- 3. Render the UI ---
+  // The JSX now uses the calculated constants directly.
   return (
     <Card className="p-6 bg-gradient-to-br from-card to-metric-card border-border">
       <div className="flex items-center justify-between">
@@ -71,17 +63,20 @@ const PLTracker = ({ clientName, symbols = [] }: PLTrackerProps) => {
           <p
             className={cn(
               "text-4xl font-bold",
-              isPositive ? "text-gain" : "text-loss"
+              isPositive ? "text-green-500" : "text-red-500" // Using clearer colors
             )}
           >
-            {isPositive ? "+" : "-"}${Math.abs(pnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {isPositive ? "+" : "-"}${Math.abs(totalPnl).toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
           <div
             className={cn(
               "flex items-center gap-2 text-lg font-semibold",
-              isPositive ? "text-gain" : "text-loss"
+              isPositive ? "text-green-500" : "text-red-500"
             )}
           >
             {isPositive ? (
@@ -91,7 +86,7 @@ const PLTracker = ({ clientName, symbols = [] }: PLTrackerProps) => {
             )}
             {percentage.toFixed(2)}%
           </div>
-          <ConnectionStatus symbols={symbols} />
+          {/* You can add a connection status indicator here if needed */}
         </div>
       </div>
     </Card>

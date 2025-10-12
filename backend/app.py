@@ -1,6 +1,7 @@
 # RAD backend (Snowflake storage + Alpaca realtime)
 from __future__ import annotations
 import os, io, json, time, asyncio, pandas as pd
+import traceback
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Query, WebSocket, WebSocketDisconnect, Form, Request
@@ -9,23 +10,22 @@ from pydantic import BaseModel
 import snowflake.connector as sf
 import websockets
 from typing import List, Dict, Optional
-
 from pathlib import Path
+
+# This import assumes market_data.py is in the same directory
 from market_data import (
     start_market_data_stream, 
-    start_position_tracking,
-    register_websocket,
-    unregister_websocket
+    start_position_tracking
 )
 
-# Prefer backend/.env if present, otherwise fall back to repo-level .env
+# --- Load Environment Variables ---
 env_path = Path(__file__).resolve().parent / ".env"
 if env_path.exists():
     load_dotenv(env_path)
 else:
     load_dotenv()
 
-# ----------- ENV -----------
+# --- Environment Configuration ---
 SF_ACCOUNT   = os.getenv("SF_ACCOUNT")
 SF_USER      = os.getenv("SF_USER")
 SF_PASSWORD  = os.getenv("SF_PASSWORD")
@@ -33,118 +33,34 @@ SF_ROLE      = os.getenv("SF_ROLE", "ACCOUNTADMIN")
 SF_WAREHOUSE = os.getenv("SF_WAREHOUSE", "COMPUTE_WH")
 SF_DATABASE  = os.getenv("SF_DATABASE", "RAD_DB")
 SF_SCHEMA    = os.getenv("SF_SCHEMA", "PUBLIC")
-
 DROP_THRESHOLD_PCT = float(os.getenv("DROP_THRESHOLD_PCT", "0.05"))
-
 ALPACA_KEY_ID     = os.getenv("ALPACA_KEY_ID")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 ALPACA_DEMO       = os.getenv("ALPACA_DEMO", "1") == "1"
 
-# ----------- APP -----------
+print(f"--- DIAGNOSTIC CHECK --- Alpaca Key Loaded: {ALPACA_KEY_ID is not None}, Secret Key Loaded: {ALPACA_SECRET_KEY is not None}")
+
+# --- Main FastAPI App Instance ---
 app = FastAPI(title="RAD — Snowflake Backend", version="1.0.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"]
 )
 
-@app.websocket("/ws/market-data")
-async def market_data_websocket(websocket: WebSocket):
-    try:
-        await register_websocket(websocket)
-        while True:
-            try:
-                # Keep the connection alive
-                data = await websocket.receive_text()
-                if data == "ping":
-                    await websocket.send_text("pong")
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                print(f"Error in WebSocket connection: {e}")
-                break
-    finally:
-        await unregister_websocket(websocket)
-
+# --- WebSocket Connection Manager (Corrected) ---
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[str, List[WebSocket]] = {}  # client_id -> [WebSocket]
-        self.price_updates: Dict[str, Dict] = {}
-        self.connection_times: Dict[str, datetime] = {}  # client_id -> last_message_time
-        self.max_connections_per_client = 5
-        self.message_rate_limit = 1  # messages per 30 seconds
-        self.message_counts: Dict[str, List[float]] = {}  # client_id -> [timestamps]
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+        self.connection_times: Dict[str, datetime] = {}
         print("ConnectionManager initialized")
 
     async def connect(self, websocket: WebSocket, client_id: str):
-        print(f"Connection attempt from client {client_id}")
-        # Check connection limit
-        if client_id in self.active_connections:
-            if len(self.active_connections[client_id]) >= self.max_connections_per_client:
-                print(f"Too many connections for client {client_id}")
-                await websocket.close(code=1008, reason="Too many connections")
-                return False
-
-        try:
-            await websocket.accept()
-            print(f"Connection accepted for client {client_id}")
-            
-            if client_id not in self.active_connections:
-                self.active_connections[client_id] = []
-            self.active_connections[client_id].append(websocket)
-            self.connection_times[client_id] = datetime.now()
-            self.message_counts[client_id] = []
-            
-            # Send connection confirmation
-            await websocket.send_json({
-                "type": "connection_status",
-                "status": "connected",
-                "client_id": client_id
-            })
-            
-            return True
-        except Exception as e:
-            print(f"Error accepting connection for client {client_id}: {e}")
-            return False
-
-    async def broadcast_price_update(self, symbol: str, price_data: Dict):
-        self.price_updates[symbol] = price_data
-        dead_connections = []
-
-        # Build the message once
-        message = {
-            "type": "price_update",
-            "symbol": symbol,
-            "data": price_data,
-            "timestamp": datetime.now().isoformat()
-        }
-        message_str = json.dumps(message)
-
-        # Process each client and its connections
-        client_updates = []
-        for client_id, connections in self.active_connections.items():
-            if not await self.check_rate_limit(client_id):
-                continue
-
-            client_updates.extend((websocket, client_id) for websocket in connections)
-
-        # Send updates in parallel
-        async def send_update(websocket: WebSocket, client_id: str):
-            try:
-                await websocket.send_text(message_str)
-                return None
-            except (WebSocketDisconnect, Exception) as e:
-                print(f"Error sending to client {client_id}: {e}")
-                return (websocket, client_id)
-
-        # Send updates concurrently
-        dead = await asyncio.gather(
-            *(send_update(ws, cid) for ws, cid in client_updates)
-        )
-        dead_connections = [x for x in dead if x is not None]
-
-        # Clean up dead connections
-        for websocket, client_id in dead_connections:
-            self.disconnect(websocket, client_id)
+        await websocket.accept()
+        if client_id not in self.active_connections:
+            self.active_connections[client_id] = []
+        self.active_connections[client_id].append(websocket)
+        self.connection_times[client_id] = datetime.now()
+        print(f"Connection accepted for client {client_id}")
 
     def disconnect(self, websocket: WebSocket, client_id: str):
         if client_id in self.active_connections:
@@ -153,49 +69,49 @@ class ConnectionManager:
                 if not self.active_connections[client_id]:
                     del self.active_connections[client_id]
                     del self.connection_times[client_id]
-                    del self.message_counts[client_id]
             except ValueError:
                 pass
 
-    async def check_rate_limit(self, client_id: str) -> bool:
-        now = time.time()
-        if client_id in self.message_counts:
-            # Remove messages older than 30 seconds
-            self.message_counts[client_id] = [
-                ts for ts in self.message_counts[client_id] 
-                if now - ts <= 30.0
-            ]
-            if len(self.message_counts[client_id]) >= self.message_rate_limit:
-                return False
-            self.message_counts[client_id].append(now)
-        else:
-            self.message_counts[client_id] = [now]
-        return True
+    async def broadcast_snapshot(self, snapshot_data: dict, flags_data: dict):
+        if not self.active_connections:
+            return
+        message = json.dumps({
+            "type": "live_update",
+            "snapshot": snapshot_data,
+            "flags": flags_data
+        }, default=str)
+        
+        all_websockets = [ws for conn_list in self.active_connections.values() for ws in conn_list]
+        if not all_websockets:
+            return
+
+        await asyncio.gather(
+            *(ws.send_text(message) for ws in all_websockets),
+            return_exceptions=True
+        )
 
     async def monitor_connections(self):
-        """Monitor connection health and clean up stale connections"""
         while True:
+            await asyncio.sleep(30)
             now = datetime.now()
-            dead_connections = []
-
-            for client_id, connections in self.active_connections.items():
-                last_time = self.connection_times.get(client_id)
-                if last_time and (now - last_time).seconds > 60:
-                    for websocket in connections:
-                        dead_connections.append((websocket, client_id))
-
-            for websocket, client_id in dead_connections:
-                try:
-                    await websocket.close(code=1001, reason="Connection timeout")
-                except Exception:
-                    pass
-                self.disconnect(websocket, client_id)
-
-            await asyncio.sleep(30)  # Check every 30 seconds
+            stale_clients = [
+                client_id for client_id, last_time in self.connection_times.items()
+                if (now - last_time).total_seconds() > 65
+            ]
+            
+            for client_id in stale_clients:
+                print(f"Client {client_id} is stale. Closing connections.")
+                connections_to_close = self.active_connections.get(client_id, []).copy()
+                for ws in connections_to_close:
+                    try:
+                        await ws.close(code=1001, reason="Connection timeout")
+                    except Exception:
+                        pass
+                    self.disconnect(ws, client_id)
 
 manager = ConnectionManager()
-print(f"--- [app.py] Manager Initialized --- ID: {id(manager)}") 
-# ----------- SNOWFLAKE HELPERS -----------
+
+# --- Snowflake Database Helpers ---
 def sf_conn():
     return sf.connect(
         user=SF_USER, password=SF_PASSWORD, account=SF_ACCOUNT,
@@ -204,26 +120,16 @@ def sf_conn():
 
 def run_sql(sql: str, params=None, fetch=True):
     try:
-        conn = sf_conn()
-    except Exception as e:
-        # Snowflake not configured or connection failed; return empty result
-        print("[sf] connection error:", e)
-        return [] if fetch else []
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, params or {})
-            if fetch:
-                try:
+        with sf_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params or {})
+                if fetch:
                     return cur.fetchall()
-                except Exception:
-                    return []
-            return []
     except Exception as e:
-        print("[sf] query error:", e)
-        return [] if fetch else []
+        print(f"[sf] query error: {e}")
+        return [] if fetch else None
 
 def init_schema_if_needed():
-    # Load the schema SQL file relative to this module (backend/rad_schema.sql)
     schema_path = Path(__file__).resolve().parent / "rad_schema.sql"
     if not schema_path.exists():
         print(f"[sf] schema file not found at {schema_path}; skipping init_schema_if_needed")
@@ -232,281 +138,108 @@ def init_schema_if_needed():
     for stmt in [s.strip() for s in ddl.split(";") if s.strip()]:
         run_sql(stmt, fetch=False)
 
-# # WebSocket endpoint for real-time updates
-# @app.websocket("/ws/{client_id}")
-# async def websocket_endpoint(
-#     websocket: WebSocket,
-#     client_id: str
-# ):
-#     print(f"New WebSocket connection request from client: {client_id}")
-    
-#     # Attempt to connect
-#     if not await manager.connect(websocket, client_id):
-#         print(f"Connection rejected for client: {client_id}")
-#         return
-
-#     print(f"WebSocket connection accepted for client: {client_id}")
-#     try:
-#         # Send initial price data
-#         symbols = get_symbols()
-#         price_data = {}
-#         for symbol in symbols:
-#             rows = run_sql(f"SELECT BID, ASK, P, TS FROM {SF_DATABASE}.{SF_SCHEMA}.PRICES WHERE SYMBOL = '{symbol}'")
-#             if rows:
-#                 bid, ask, price, ts = rows[0]
-#                 price_data[symbol] = {
-#                     "price": price,
-#                     "bid": bid,
-#                     "ask": ask,
-#                     "timestamp": ts.isoformat() if ts else None
-#                 }
-        
-#         if price_data:
-#             print(f"Sending initial price data to client {client_id}: {price_data}")
-#             await websocket.send_json({
-#                 "type": "price_updates",
-#                 "data": price_data
-#             })
-
-#         while True:
-#             try:
-#                 data = await websocket.receive_json()
-#                 print(f"Received message from client {client_id}: {data}")
-                
-#                 # Update last message time
-#                 manager.connection_times[client_id] = datetime.now()
-
-#                 # Handle the message
-#                 match data.get("type"):
-#                     case "subscribe":
-#                         symbols = data.get("symbols", [])
-#                         print(f"Client {client_id} subscribing to symbols: {symbols}")
-#                         # Send current prices for subscribed symbols
-#                         for symbol in symbols:
-#                             rows = run_sql(f"SELECT BID, ASK, P, TS FROM {SF_DATABASE}.{SF_SCHEMA}.PRICES WHERE SYMBOL = '{symbol}'")
-#                             if rows:
-#                                 bid, ask, price, ts = rows[0]
-#                                 await websocket.send_json({
-#                                     "type": "price_update",
-#                                     "symbol": symbol,
-#                                     "data": {
-#                                         "price": price,
-#                                         "bid": bid,
-#                                         "ask": ask,
-#                                         "timestamp": ts.isoformat() if ts else None
-#                                     }
-#                                 })
-#                     case "ping":
-#                         await websocket.send_json({"type": "pong"})
-#             except json.JSONDecodeError:
-#                 print(f"Invalid JSON received from client {client_id}")
-#                 continue
-#     except WebSocketDisconnect:
-#         print(f"WebSocket disconnected for client: {client_id}")
-#         manager.disconnect(websocket, client_id)
-#     except Exception as e:
-#         print(f"Error in websocket handler for client {client_id}: {e}")
-#         manager.disconnect(websocket, client_id)
-
-# DELETE your old websocket_endpoint function and REPLACE it with this one
-
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    print(f"New WebSocket connection request from client: {client_id}")
-    
-    if not await manager.connect(websocket, client_id):
-        print(f"Connection rejected for client: {client_id}")
-        return
-
-    print(f"WebSocket connection accepted for client: {client_id}")
-    
-    # This background task will listen for messages from the client
-    async def receiver():
-        try:
-            while True:
-                data = await websocket.receive_json()
-                print(f"Received message from client {client_id}: {data}")
-                
-                # Update the last message time to keep the connection alive
-                manager.connection_times[client_id] = datetime.now()
-
-                # Handle different message types
-                if data.get("type") == "ping":
-                    await websocket.send_json({"type": "pong"})
-                # You can add other message handlers here, like "subscribe"
-                
-        except (WebSocketDisconnect, json.JSONDecodeError):
-            # Let the main loop handle the disconnect
-            pass
-        except Exception as e:
-            print(f"Error in receiver for client {client_id}: {e}")
-            # Also let the main loop handle disconnect
-            pass
-
-    receiver_task = asyncio.create_task(receiver())
-
-    try:
-        # Send initial data right after connecting
-        initial_snapshot = await _snapshot_data()
-        initial_flags = await _flags_data()
-        await websocket.send_json({
-            "type": "initial_state",
-            "snapshot": initial_snapshot,
-            "flags": initial_flags
-        }, default=str)
-        
-        # Main loop to keep the connection alive.
-        # The broadcast will send updates, and the receiver_task handles inbound messages.
-        while True:
-            await asyncio.sleep(60) # Sleep to prevent a busy loop
-
-    except WebSocketDisconnect:
-        print(f"WebSocket disconnected for client: {client_id}")
-    except Exception as e:
-        print(f"Error in websocket handler for client {client_id}: {e}")
-    finally:
-        print(f"Cleaning up connection for client: {client_id}")
-        receiver_task.cancel() # Stop the background listener
-        manager.disconnect(websocket, client_id)
-
 def seed_clients_log():
-    # Read clients table and print count
     try:
         rows = run_sql(f"SELECT ID, NAME, TYPE FROM {SF_DATABASE}.{SF_SCHEMA}.CLIENTS")
         print(f"[sf] seeded clients: {len(rows) if rows else 0}")
         for r in (rows or []):
             print("  -", r[0], r[1], r[2])
     except Exception as e:
-        print("[sf] unable to list clients:", e)
+        print(f"[sf] unable to list clients: {e}")
 
-# ----------- LLM STANDARDIZE (rules stub) -----------
+# --- Data Handling Helpers ---
 CANON_COLS = ["ACCOUNT","SYMBOL","QTY","CURRENCY","COST_BASIS","SOD_PRICE"]
-ALIASES = {
-    "ACCOUNT":    ["account","acct","account_id","portfolio","fund_account"],
-    "SYMBOL":     ["symbol","ticker","secid","ric"],
-    "QTY":        ["qty","quantity","position","shares","units"],
-    "CURRENCY":   ["currency","ccy","curr"],
-    "COST_BASIS": ["cost_basis","avg_cost","average_cost","cost"],
-    "SOD_PRICE":  ["sod_price","prev_close","close_price","prior_close"],
-}
+ALIASES = { "ACCOUNT": ["account","acct","account_id","portfolio","fund_account"], "SYMBOL": ["symbol","ticker","secid","ric"], "QTY": ["qty","quantity","position","shares","units"], "CURRENCY": ["currency","ccy","curr"], "COST_BASIS": ["cost_basis","avg_cost","average_cost","cost"], "SOD_PRICE":  ["sod_price","prev_close","close_price","prior_close"],}
 def standardize_df(df: pd.DataFrame) -> pd.DataFrame:
-    lower = {c.lower(): c for c in df.columns}
-    colmap = {}
+    lower = {c.lower(): c for c in df.columns}; colmap = {}
     for canon, opts in ALIASES.items():
         for opt in opts:
-            if opt in lower:
-                colmap[canon] = lower[opt]
-                break
+            if opt in lower: colmap[canon] = lower[opt]; break
     out = pd.DataFrame()
-    for c in CANON_COLS:
-        out[c] = df[colmap[c]] if c in colmap else None
+    for c in CANON_COLS: out[c] = df[colmap[c]] if c in colmap else None
     out["QTY"] = pd.to_numeric(out["QTY"], errors="coerce").fillna(0)
-    for c in ["COST_BASIS","SOD_PRICE"]:
-        out[c] = pd.to_numeric(out[c], errors="coerce")
+    for c in ["COST_BASIS","SOD_PRICE"]: out[c] = pd.to_numeric(out[c], errors="coerce")
     out["CURRENCY"] = out["CURRENCY"].fillna("USD")
     out = out[out["SYMBOL"].notna() & (out["QTY"].astype(float) != 0)]
     out["SYMBOL"] = out["SYMBOL"].astype(str).str.upper().str.strip()
-    # Ensure missing ACCOUNTs become a default 'ACCT' before converting to string
     out["ACCOUNT"] = out["ACCOUNT"].fillna("ACCT").astype(str).str.strip()
     return out.reset_index(drop=True)
 
 def upsert_positions(std: pd.DataFrame):
-    # aggregate by symbol (MVP)
-    agg = std.groupby("SYMBOL", as_index=False).agg({
-        "ACCOUNT": "first",
-        "QTY": "sum",
-        "CURRENCY": "first",
-        "COST_BASIS": "first",
-        "SOD_PRICE": "first",   # or "mean" if you prefer qty-weighted later
-    })
-    if agg.empty:
-        return
-
-    def esc(s: str) -> str:
-        # escape single quotes for SQL literals
-        return str(s).replace("'", "''")
-
+    agg = std.groupby("SYMBOL", as_index=False).agg({"ACCOUNT": "first", "QTY": "sum", "CURRENCY": "first", "COST_BASIS": "first", "SOD_PRICE": "first"})
+    if agg.empty: return
+    def esc(s: str) -> str: return str(s).replace("'", "''")
     values_rows = []
     for _, row in agg.iterrows():
-        sym  = esc(row["SYMBOL"])
-        acct = esc(row["ACCOUNT"])
-        curr = esc(row["CURRENCY"])
-        qty  = float(row["QTY"]) if pd.notna(row["QTY"]) else 0.0
-        cb   = "NULL" if pd.isna(row["COST_BASIS"]) else f"{float(row['COST_BASIS'])}"
-        sod  = "NULL" if pd.isna(row["SOD_PRICE"])  else f"{float(row['SOD_PRICE'])}"
-        # ensure client exists in CLIENTS table
-        try:
-            run_sql(f"INSERT INTO {SF_DATABASE}.{SF_SCHEMA}.CLIENTS (ID,NAME,TYPE) SELECT '{acct}','{acct}','custodian' WHERE NOT EXISTS (SELECT 1 FROM {SF_DATABASE}.{SF_SCHEMA}.CLIENTS WHERE ID='{acct}')", fetch=False)
-        except Exception:
-            pass
-        values_rows.append(
-            f"('{sym}','{acct}',{qty},'{curr}',{cb},{sod})"
-        )
-
+        sym=esc(row["SYMBOL"]); acct=esc(row["ACCOUNT"]); curr=esc(row["CURRENCY"])
+        qty=float(row["QTY"]) if pd.notna(row["QTY"]) else 0.0
+        cb="NULL" if pd.isna(row["COST_BASIS"]) else f"{float(row['COST_BASIS'])}"
+        sod="NULL" if pd.isna(row["SOD_PRICE"])  else f"{float(row['SOD_PRICE'])}"
+        run_sql(f"INSERT INTO {SF_DATABASE}.{SF_SCHEMA}.CLIENTS (ID,NAME,TYPE) SELECT '{acct}','{acct}','custodian' WHERE NOT EXISTS (SELECT 1 FROM {SF_DATABASE}.{SF_SCHEMA}.CLIENTS WHERE ID='{acct}')", fetch=False)
+        values_rows.append(f"('{sym}','{acct}',{qty},'{curr}',{cb},{sod})")
     values_sql = ",".join(values_rows) or "(NULL,NULL,NULL,NULL,NULL,NULL)"
-
-    sql = f"""
-    MERGE INTO {SF_DATABASE}.{SF_SCHEMA}.POSITIONS t
-    USING (
-      SELECT COLUMN1 SYMBOL, COLUMN2 ACCOUNT, COLUMN3 QTY, COLUMN4 CURRENCY, COLUMN5 COST_BASIS, COLUMN6 SOD_PRICE
-      FROM VALUES {values_sql}
-    ) s
-    ON t.SYMBOL = s.SYMBOL
-    WHEN MATCHED THEN UPDATE SET
-      t.ACCOUNT    = s.ACCOUNT,
-      t.QTY        = t.QTY + s.QTY,
-      t.CURRENCY   = COALESCE(t.CURRENCY, s.CURRENCY),
-      t.COST_BASIS = COALESCE(t.COST_BASIS, s.COST_BASIS),
-      t.SOD_PRICE  = COALESCE(t.SOD_PRICE,  s.SOD_PRICE)
-    WHEN NOT MATCHED THEN INSERT (SYMBOL, ACCOUNT, QTY, CURRENCY, COST_BASIS, SOD_PRICE)
-      VALUES (s.SYMBOL, s.ACCOUNT, s.QTY, s.CURRENCY, s.COST_BASIS, s.SOD_PRICE);
-    """
+    sql = f"MERGE INTO {SF_DATABASE}.{SF_SCHEMA}.POSITIONS t USING (SELECT COLUMN1 SYMBOL, COLUMN2 ACCOUNT, COLUMN3 QTY, COLUMN4 CURRENCY, COLUMN5 COST_BASIS, COLUMN6 SOD_PRICE FROM VALUES {values_sql}) s ON t.SYMBOL = s.SYMBOL WHEN MATCHED THEN UPDATE SET t.ACCOUNT=s.ACCOUNT, t.QTY=t.QTY+s.QTY, t.CURRENCY=COALESCE(t.CURRENCY,s.CURRENCY), t.COST_BASIS=COALESCE(t.COST_BASIS,s.COST_BASIS), t.SOD_PRICE=COALESCE(t.SOD_PRICE,s.SOD_PRICE) WHEN NOT MATCHED THEN INSERT (SYMBOL,ACCOUNT,QTY,CURRENCY,COST_BASIS,SOD_PRICE) VALUES (s.SYMBOL,s.ACCOUNT,s.QTY,s.CURRENCY,s.COST_BASIS,s.SOD_PRICE);"
     run_sql(sql, fetch=False)
 
 def evaluate_flags_sql():
-    # 1) clear current flags
     run_sql(f"DELETE FROM {SF_DATABASE}.{SF_SCHEMA}.FLAGS;", fetch=False)
-
-    # 2) recompute flags
-    insert_sql = f"""
-    INSERT INTO {SF_DATABASE}.{SF_SCHEMA}.FLAGS
-      (SYMBOL, PCT_CHANGE, SOD_PRICE, LAST_PRICE, THRESHOLD_PCT, TS)
-    SELECT
-      p.SYMBOL,
-      CASE WHEN p.SOD_PRICE IS NOT NULL AND p.LAST_PRICE IS NOT NULL AND p.SOD_PRICE <> 0
-           THEN (p.LAST_PRICE - p.SOD_PRICE) / p.SOD_PRICE END AS PCT_CHANGE,
-      p.SOD_PRICE,
-      p.LAST_PRICE,
-      {DROP_THRESHOLD_PCT},
-      p.LAST_TS
-    FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS p
-    WHERE p.SOD_PRICE IS NOT NULL
-      AND p.LAST_PRICE IS NOT NULL
-      AND p.LAST_PRICE <= p.SOD_PRICE * (1 - {DROP_THRESHOLD_PCT});
-    """
+    insert_sql = f"INSERT INTO {SF_DATABASE}.{SF_SCHEMA}.FLAGS (SYMBOL,PCT_CHANGE,SOD_PRICE,LAST_PRICE,THRESHOLD_PCT,TS) SELECT p.SYMBOL, CASE WHEN p.SOD_PRICE IS NOT NULL AND p.LAST_PRICE IS NOT NULL AND p.SOD_PRICE<>0 THEN (p.LAST_PRICE-p.SOD_PRICE)/p.SOD_PRICE END AS PCT_CHANGE, p.SOD_PRICE, p.LAST_PRICE, {DROP_THRESHOLD_PCT}, p.LAST_TS FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS p WHERE p.SOD_PRICE IS NOT NULL AND p.LAST_PRICE IS NOT NULL AND p.LAST_PRICE <= p.SOD_PRICE * (1 - {DROP_THRESHOLD_PCT});"
     run_sql(insert_sql, fetch=False)
-
 
 def get_symbols():
     rows = run_sql(f"SELECT DISTINCT SYMBOL FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS WHERE SYMBOL IS NOT NULL")
     return [r[0] for r in rows] if rows else []
 
-# ----------- MODELS -----------
+async def _snapshot_data():
+    rows = run_sql(f"SELECT * FROM {SF_DATABASE}.{SF_SCHEMA}.SNAPSHOT ORDER BY SYMBOL")
+    cols = ["ACCOUNT","SYMBOL","QTY","CURRENCY","COST_BASIS","SOD_PRICE","LAST_PRICE","LAST_TS","PCT_CHANGE_VS_SOD"]
+    return [dict(zip(cols, r)) for r in rows]
+
+async def _flags_data():
+    rows = run_sql(f"SELECT * FROM {SF_DATABASE}.{SF_SCHEMA}.FLAGS ORDER BY TS DESC")
+    cols = ["SYMBOL","PCT_CHANGE","SOD_PRICE","LAST_PRICE","THRESHOLD_PCT","TS"]
+    return [dict(zip(cols, r)) for r in rows]
+
+# --- Main WebSocket Endpoint (The Only One) ---
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    await manager.connect(websocket, client_id)
+    
+    async def receiver():
+        try:
+            while True:
+                data = await websocket.receive_json()
+                print(f"Received ping from client {client_id}: {data}")
+                if client_id in manager.connection_times:
+                    manager.connection_times[client_id] = datetime.now()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            manager.disconnect(websocket, client_id)
+            print(f"Receiver task stopped for client: {client_id}")
+
+    receiver_task = asyncio.create_task(receiver())
+
+    try:
+        print(f"Sending initial state to client {client_id}")
+        initial_snapshot = await _snapshot_data()
+        initial_flags = await _flags_data()
+        await websocket.send_json({
+            "type": "initial_state",
+            "snapshot": initial_snapshot,
+            "flags": initial_flags
+        })
+        await asyncio.Future()
+    except WebSocketDisconnect:
+        print(f"Client {client_id} disconnected.")
+    finally:
+        receiver_task.cancel()
+        manager.disconnect(websocket, client_id)
+
+# --- HTTP API Routes ---
 class SearchResult(BaseModel):
     snapshot_hits: list[dict]
     flag_hits: list[dict]
-
-# ----------- ROUTES -----------
-@app.on_event("startup")
-def _startup():
-    init_schema_if_needed()
-    # log seeded clients
-    seed_clients_log()
-    # start price loop unless explicitly skipped (useful for tests/dev)
-    if os.getenv("SKIP_PRICE_LOOP", "0") != "1":
-        asyncio.create_task(mock_price_loop() if (ALPACA_DEMO or not (ALPACA_KEY_ID and ALPACA_SECRET_KEY)) else alpaca_price_loop())
-    else:
-        print("[app] SKIP_PRICE_LOOP=1 set; not starting price loop")
 
 @app.get("/health")
 def health():
@@ -514,26 +247,10 @@ def health():
     return {"ok": True, "flags": int(flags[0][0]) if flags else 0, "demo": ALPACA_DEMO}
 
 @app.post("/ingest")
-async def ingest(file: UploadFile = File(...), clientName: str | None = None, request: Request = None):
-    """Ingest an uploaded Excel/CSV file. `clientName` can be provided directly
-    (when called from Python) or as a multipart/form field (when called via HTTP).
-    """
+async def ingest(file: UploadFile = File(...), clientName: str = Form(None)):
     content = await file.read()
-    name = (file.filename or "").lower()
-    if name.endswith(".csv"):
-        df = pd.read_csv(io.BytesIO(content))
-    else:
-        df = pd.read_excel(io.BytesIO(content))
+    df = pd.read_csv(io.BytesIO(content)) if (file.filename or "").lower().endswith(".csv") else pd.read_excel(io.BytesIO(content))
     std = standardize_df(df)
-    # If clientName wasn't passed directly, try to read it from the request form
-    if not clientName and request is not None:
-        try:
-            form = await request.form()
-            clientName = form.get('clientName') or clientName
-        except Exception:
-            pass
-
-    # Apply clientName to rows where ACCOUNT is empty
     if clientName:
         std["ACCOUNT"] = std["ACCOUNT"].fillna(clientName).astype(str)
     upsert_positions(std)
@@ -555,16 +272,8 @@ def flags():
 @app.get("/search", response_model=SearchResult)
 def search(q: str = Query(..., min_length=1)):
     ql = q.strip().upper()
-    rows1 = run_sql(f"""
-        SELECT * FROM {SF_DATABASE}.{SF_SCHEMA}.SNAPSHOT
-        WHERE UPPER(SYMBOL) LIKE '%{ql}%' OR UPPER(ACCOUNT) LIKE '%{ql}%'
-        ORDER BY SYMBOL
-    """)
-    rows2 = run_sql(f"""
-        SELECT * FROM {SF_DATABASE}.{SF_SCHEMA}.FLAGS
-        WHERE UPPER(SYMBOL) LIKE '%{ql}%'
-        ORDER BY TS DESC
-    """)
+    rows1 = run_sql(f"SELECT * FROM {SF_DATABASE}.{SF_SCHEMA}.SNAPSHOT WHERE UPPER(SYMBOL) LIKE '%{ql}%' OR UPPER(ACCOUNT) LIKE '%{ql}%' ORDER BY SYMBOL")
+    rows2 = run_sql(f"SELECT * FROM {SF_DATABASE}.{SF_SCHEMA}.FLAGS WHERE UPPER(SYMBOL) LIKE '%{ql}%' ORDER BY TS DESC")
     cols1 = ["ACCOUNT","SYMBOL","QTY","CURRENCY","COST_BASIS","SOD_PRICE","LAST_PRICE","LAST_TS","PCT_CHANGE_VS_SOD"]
     cols2 = ["SYMBOL","PCT_CHANGE","SOD_PRICE","LAST_PRICE","THRESHOLD_PCT","TS"]
     return SearchResult(
@@ -572,78 +281,7 @@ def search(q: str = Query(..., min_length=1)):
         flag_hits=[dict(zip(cols2, r)) for r in rows2],
     )
 
-# ----------- WS (LIVE SNAPSHOT) -----------
-WS_CLIENTS: list[WebSocket] = []
-
-async def push_snapshot():
-    if not WS_CLIENTS: return
-    data = {"snapshot": (await _snapshot_data()), "flags": (await _flags_data())}
-    msg = json.dumps(data, default=str)
-    dead = []
-    for ws in WS_CLIENTS:
-        try: await ws.send_text(msg)
-        except Exception: dead.append(ws)
-    for ws in dead:
-        try: WS_CLIENTS.remove(ws)
-        except ValueError: pass
-
-async def _snapshot_data():
-    rows = run_sql(f"SELECT * FROM {SF_DATABASE}.{SF_SCHEMA}.SNAPSHOT ORDER BY SYMBOL")
-    cols = ["ACCOUNT","SYMBOL","QTY","CURRENCY","COST_BASIS","SOD_PRICE","LAST_PRICE","LAST_TS","PCT_CHANGE_VS_SOD"]
-    return [dict(zip(cols, r)) for r in rows]
-
-async def _flags_data():
-    rows = run_sql(f"SELECT * FROM {SF_DATABASE}.{SF_SCHEMA}.FLAGS ORDER BY TS DESC")
-    cols = ["SYMBOL","PCT_CHANGE","SOD_PRICE","LAST_PRICE","THRESHOLD_PCT","TS"]
-    return [dict(zip(cols, r)) for r in rows]
-
-@app.websocket("/stream/snapshot")
-async def stream_snapshot(ws: WebSocket):
-    await ws.accept()
-    WS_CLIENTS.append(ws)
-    try:
-        await ws.send_text(json.dumps({"snapshot": await _snapshot_data(), "flags": await _flags_data()}, default=str))
-        while True:
-            await asyncio.sleep(30)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        try: WS_CLIENTS.remove(ws)
-        except ValueError: pass
-
-
-# PASTE THIS NEW COMBINED FUNCTION IN
-@app.on_event("startup")
-async def startup_event():
-    print("[app] Starting up...")
-    
-    # 1. Initialize database schema and log clients
-    init_schema_if_needed()
-    seed_clients_log()
-    
-    # 2. Start background tasks for market data
-    from market_data import start_market_data_stream, start_position_tracking
-    asyncio.create_task(start_market_data_stream())
-    asyncio.create_task(start_position_tracking())
-    
-    # 3. Start the ConnectionManager's monitoring loop (this was being skipped!)
-    # asyncio.create_task(manager.monitor_connections())
-    print("[app] Connection monitor started.")
-    
-    # 4. Start the correct price loop
-    if os.getenv("SKIP_PRICE_LOOP", "0") != "1":
-        print("[app] Starting price loop...")
-        is_demo = ALPACA_DEMO or not (ALPACA_KEY_ID and ALPACA_SECRET_KEY)
-        if is_demo:
-            asyncio.create_task(mock_price_loop())
-            print("[app] Mock price loop started.")
-        else:
-            asyncio.create_task(alpaca_price_loop())
-            print("[app] Alpaca price loop started.")
-    else:
-        print("[app] SKIP_PRICE_LOOP=1; not starting price loop.")
-
-# ----------- PRICE LOOPS -----------
+# --- Price Update Loops ---
 async def mock_price_loop():
     while True:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -652,50 +290,41 @@ async def mock_price_loop():
             lp = row[0][0] if row else None
             sp = row[0][1] if row and row[0][1] is not None else 100.0
             price = (lp or sp or 100.0) * (1.001 if int(time.time())%2==0 else 0.999)
-            run_sql(f"""
-            UPDATE {SF_DATABASE}.{SF_SCHEMA}.POSITIONS
-            SET LAST_PRICE={price}, LAST_TS=TO_TIMESTAMP_NTZ('{now}')
-            WHERE SYMBOL='{sym}';
-            """, fetch=False)
-            run_sql(f"""
-            MERGE INTO {SF_DATABASE}.{SF_SCHEMA}.PRICES t
-            USING (SELECT '{sym}' SYMBOL, {price} P, {price-0.01} BID, {price+0.01} ASK, TO_TIMESTAMP_NTZ('{now}') TS) s
-              ON t.SYMBOL=s.SYMBOL
-            WHEN MATCHED THEN UPDATE SET t.P=s.P,t.BID=s.BID,t.ASK=s.ASK,t.TS=s.TS
-            WHEN NOT MATCHED THEN INSERT (SYMBOL,P,BID,ASK,TS) VALUES (s.SYMBOL,s.P,s.BID,s.ASK,s.TS);
-            """, fetch=False)
+            run_sql(f"UPDATE {SF_DATABASE}.{SF_SCHEMA}.POSITIONS SET LAST_PRICE={price}, LAST_TS=TO_TIMESTAMP_NTZ('{now}') WHERE SYMBOL='{sym}';", fetch=False)
+            run_sql(f"MERGE INTO {SF_DATABASE}.{SF_SCHEMA}.PRICES t USING (SELECT '{sym}' SYMBOL, {price} P, {price-0.01} BID, {price+0.01} ASK, TO_TIMESTAMP_NTZ('{now}') TS) s ON t.SYMBOL=s.SYMBOL WHEN MATCHED THEN UPDATE SET t.P=s.P,t.BID=s.BID,t.ASK=s.ASK,t.TS=s.TS WHEN NOT MATCHED THEN INSERT (SYMBOL,P,BID,ASK,TS) VALUES (s.SYMBOL,s.P,s.BID,s.ASK,s.TS);", fetch=False)
+        
         evaluate_flags_sql()
-        await push_snapshot()
+        snapshot_data = await _snapshot_data()
+        flags_data = await _flags_data()
+        await manager.broadcast_snapshot(snapshot_data, flags_data)
         await asyncio.sleep(1)
 
-async def alpaca_price_loop():
-    url = "wss://stream.data.alpaca.markets/v2/iex"
-    async with websockets.connect(url, extra_headers={"Content-Type":"application/json"}, ping_interval=20) as ws:
-        await ws.send(json.dumps({"action":"auth","key":ALPACA_KEY_ID,"secret":ALPACA_SECRET_KEY}))
-        resp = json.loads(await ws.recv())
-        if not (isinstance(resp, list) and any(m.get("T")=="success" for m in resp)):
-            print("[ALPACA] auth failed:", resp); return
-        syms = get_symbols()
-        if syms: await ws.send(json.dumps({"action":"subscribe","quotes":syms}))
-        while True:
-            data = json.loads(await ws.recv())
-            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            for ev in data:
-                if ev.get("T") == "q":
-                    sym = ev.get("S"); ap=ev.get("ap"); bp=ev.get("bp")
-                    lp = ap or bp
-                    if lp:
-                        run_sql(f"""
-                        UPDATE {SF_DATABASE}.{SF_SCHEMA}.POSITIONS
-                        SET LAST_PRICE={lp}, LAST_TS=TO_TIMESTAMP_NTZ('{now}')
-                        WHERE SYMBOL='{sym}';
-                        """, fetch=False)
-                        run_sql(f"""
-                        MERGE INTO {SF_DATABASE}.{SF_SCHEMA}.PRICES t
-                        USING (SELECT '{sym}' SYMBOL, {lp} P, {bp or 'NULL'} BID, {ap or 'NULL'} ASK, TO_TIMESTAMP_NTZ('{now}') TS) s
-                          ON t.SYMBOL=s.SYMBOL
-                        WHEN MATCHED THEN UPDATE SET t.P=s.P,t.BID=s.BID,t.ASK=s.ASK,t.TS=s.TS
-                        WHEN NOT MATCHED THEN INSERT (SYMBOL,P,BID,ASK,TS) VALUES (s.SYMBOL,s.P,s.BID,s.ASK,s.TS);
-                        """, fetch=False)
-            evaluate_flags_sql()
-            await push_snapshot()
+# --- Single, Corrected Startup Function ---
+async def safe_start_market_stream():
+    """A wrapper to safely start the market stream and print detailed errors."""
+    try:
+        await start_market_data_stream()
+    except Exception as e:
+        print("---!!! DETAILED MARKET STREAM CRASH REPORT !!!---")
+        print(f"An exception of type {type(e).__name__} occurred.")
+        print(traceback.format_exc())
+        print("--------------------------------------------------")
+
+@app.on_event("startup")
+async def startup_event():
+    print("[app] Starting up...")
+    
+    init_schema_if_needed()
+    seed_clients_log()
+    
+    print("Attempting to start market data stream...")
+    asyncio.create_task(safe_start_market_stream())
+    asyncio.create_task(start_position_tracking())
+    
+    print("[app] Connection monitor is DISABLED.")
+    
+    if os.getenv("SKIP_PRICE_LOOP", "0") != "1":
+        print("[app] Starting mock price loop...")
+        asyncio.create_task(mock_price_loop())
+    else:
+        print("[app] SKIP_PRICE_LOOP=1; not starting price loop.")

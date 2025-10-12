@@ -1,138 +1,112 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
-interface WebSocketPriceUpdate {
-  type: 'price_update';
-  symbol: string;
-  data: {
-    price: number;
-    bid: number;
-    ask: number;
-  };
+// Define the shape of a single position object received from the backend
+interface Position {
+  ACCOUNT: string;
+  SYMBOL: string;
+  QTY: number;
+  CURRENCY: string;
+  COST_BASIS: number | null;
+  SOD_PRICE: number | null;
+  LAST_PRICE: number | null;
+  LAST_TS: string | null;
+  PCT_CHANGE_VS_SOD: number | null;
 }
 
-interface WebSocketMessage {
-  type: string;
-  message?: string;
-}
-
-type WebSocketResponse = WebSocketPriceUpdate | WebSocketMessage;
-
-const WEBSOCKET_URL = import.meta.env.VITE_API_URL 
-  ? `ws://${new URL(import.meta.env.VITE_API_URL).host}/ws/market-data`
-  : 'ws://localhost:8000/ws/market-data';
-
-interface UseWebSocketProps {
-  symbols?: string[];
-}
-
-export function useWebSocket({ symbols = [] }: UseWebSocketProps = {}) {
-  const [connected, setConnected] = useState(false);
-  const [priceUpdates, setPriceUpdates] = useState<Record<string, number>>({});
+/**
+ * A custom React hook to manage a WebSocket connection for portfolio data.
+ * It handles connecting, receiving data, and maintaining the connection.
+ *
+ * @returns An object with the connection status, the portfolio data, and any errors.
+ */
+export function useWebSocket() {
+  const [isConnected, setIsConnected] = useState(false);
+  // This state will hold the entire array of positions from the server
+  const [portfolio, setPortfolio] = useState<Position[]>([]);
   const [error, setError] = useState<string | null>(null);
   const ws = useRef<WebSocket | null>(null);
   const pingInterval = useRef<number | null>(null);
-  const reconnectAttempts = useRef(0);
-  const maxReconnectAttempts = 5;
-
-  const cleanup = useCallback(() => {
-    if (pingInterval.current) {
-      window.clearInterval(pingInterval.current);
-      pingInterval.current = null;
-    }
-    if (ws.current) {
-      ws.current.close();
-      ws.current = null;
-    }
-  }, []);
 
   const connectWebSocket = useCallback(() => {
-    if (ws.current?.readyState === WebSocket.OPEN) return;
+    // Prevent multiple concurrent connections
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      return;
+    }
 
-    cleanup();
+    // Generate a unique client ID for this browser session
+    const clientId = `frontend_${Date.now()}`;
+    
+    // **CRITICAL FIX**: Ensure this URL and port match your backend server
+    const WEBSOCKET_URL = `ws://localhost:8002/ws/${clientId}`;
+    console.log(`Connecting to WebSocket at: ${WEBSOCKET_URL}`);
+
     ws.current = new WebSocket(WEBSOCKET_URL);
 
     ws.current.onopen = () => {
-      console.log('WebSocket connected');
-      setConnected(true);
+      console.log('✅ WebSocket connection established.');
+      setIsConnected(true);
       setError(null);
-      reconnectAttempts.current = 0;
       
-      // Start ping interval
+      // Clear any existing ping interval before setting a new one
+      if (pingInterval.current) clearInterval(pingInterval.current);
+
+      // Send a "ping" message every 30 seconds to keep the connection alive
       pingInterval.current = window.setInterval(() => {
         if (ws.current?.readyState === WebSocket.OPEN) {
-          ws.current.send('ping');
+          ws.current.send(JSON.stringify({ type: "ping" }));
         }
-      }, 30000); // Send ping every 30 seconds
-
-      // Subscribe to symbols if provided
-      if (symbols.length > 0) {
-        ws.current?.send(JSON.stringify({
-          type: 'subscribe',
-          symbols
-        }));
-      }
+      }, 30000);
     };
 
     ws.current.onclose = () => {
-      console.log('WebSocket disconnected');
-      setConnected(false);
-      cleanup();
-
-      // Attempt to reconnect unless we've hit the limit
-      reconnectAttempts.current++;
-      if (reconnectAttempts.current < maxReconnectAttempts) {
-        console.log(`Reconnecting... Attempt ${reconnectAttempts.current}`);
-        setTimeout(connectWebSocket, Math.min(1000 * reconnectAttempts.current, 5000));
-      } else {
-        setError('Connection lost. Please refresh the page to reconnect.');
-      }
+      console.log('🔌 WebSocket disconnected.');
+      setIsConnected(false);
+      if (pingInterval.current) clearInterval(pingInterval.current);
+      // Display a persistent error message on disconnection
+      setError('Connection lost. Please refresh the page to reconnect.');
     };
 
     ws.current.onerror = (event) => {
       console.error('WebSocket error:', event);
-      setError('WebSocket error occurred');
+      setError('A connection error occurred.');
     };
 
     ws.current.onmessage = (event) => {
-      if (event.data === 'pong') {
-        return;
-      }
-
       try {
-        const message = JSON.parse(event.data) as WebSocketResponse;
-        if (message.type === 'price_update') {
-          const priceUpdate = message as WebSocketPriceUpdate;
-          setPriceUpdates(prev => ({
-            ...prev,
-            [priceUpdate.symbol]: priceUpdate.data.price
-          }));
-        } else {
-          console.log('Unknown message type:', message.type);
+        const message = JSON.parse(event.data);
+        
+        // Handle the full portfolio data snapshots sent by the server
+        if (message.type === 'initial_state' || message.type === 'live_update') {
+          if (message.snapshot && Array.isArray(message.snapshot)) {
+            console.log(`Received ${message.type} with ${message.snapshot.length} positions.`);
+            // Update the portfolio state with the new data from the server
+            setPortfolio(message.snapshot);
+          }
         }
-      } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
+      } catch (err) {
+        console.error('Failed to parse WebSocket message:', err);
       }
     };
-  }, [cleanup, symbols]);
+
+  }, []); // Empty dependency array ensures this function is created only once
 
   useEffect(() => {
+    // Connect when the component mounts
     connectWebSocket();
-    return cleanup;
-  }, [connectWebSocket, cleanup]);
 
-  // Subscribe to symbols when they change
-  useEffect(() => {
-    if (connected && ws.current && symbols.length > 0) {
-      ws.current.send(JSON.stringify({
-        type: 'subscribe',
-        symbols
-      }));
-    }
-  }, [connected, symbols]);
+    // Clean up the connection when the component unmounts
+    return () => {
+      if (pingInterval.current) {
+        clearInterval(pingInterval.current);
+      }
+      if (ws.current) {
+        // Unset handlers to prevent them from firing during unmount
+        ws.current.onclose = null;
+        ws.current.onerror = null;
+        ws.current.close();
+      }
+    };
+  }, [connectWebSocket]);
 
-  return {
-    connected,
-    priceUpdates,
-    error
-  };
+  return { isConnected, portfolio, error };
 }
