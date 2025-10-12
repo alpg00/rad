@@ -3,8 +3,31 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Loader2, Sparkles, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import ReactMarkdown from "react-markdown";
 import { API_ENDPOINTS, apiCall } from "@/config/api";
+
+// Simple markdown-to-HTML converter (lighter than react-markdown)
+const parseMarkdown = (text: string) => {
+  return text
+    .split('\n')
+    .map(line => {
+      // Headers
+      if (line.startsWith('## ')) {
+        return `<h2 class="text-lg font-semibold text-foreground mt-3 mb-2">${line.slice(3)}</h2>`;
+      }
+      // Bold text
+      line = line.replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold text-foreground">$1</strong>');
+      // List items
+      if (line.startsWith('- ')) {
+        return `<li class="ml-4">${line.slice(2)}</li>`;
+      }
+      // Paragraphs
+      if (line.trim()) {
+        return `<p class="text-sm text-muted-foreground mb-2 leading-relaxed">${line}</p>`;
+      }
+      return '';
+    })
+    .join('\n');
+};
 
 interface AIInsightsProps {
   clientName: string;
@@ -266,19 +289,10 @@ const AIInsights = ({ clientName }: AIInsightsProps) => {
           </Button>
         )}
       </div>
-      <div className="prose prose-sm dark:prose-invert max-w-none">
-        {/* ReactMarkdown components remain unchanged */}
-        <ReactMarkdown
-          components={{
-            h2: ({ children }) => <h2 className="text-lg font-semibold text-foreground mt-3 mb-2">{children}</h2>,
-            p: ({ children }) => <p className="text-sm text-muted-foreground mb-2 leading-relaxed">{children}</p>,
-            ul: ({ children }) => <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground mb-2">{children}</ul>,
-            strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
-          }}
-        >
-          {analysis}
-        </ReactMarkdown>
-      </div>
+      <div 
+        className="prose prose-sm dark:prose-invert max-w-none"
+        dangerouslySetInnerHTML={{ __html: parseMarkdown(analysis) }}
+      />
     </Card>
   );
 };
