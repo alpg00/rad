@@ -127,6 +127,7 @@ def standardize_df(df:pd.DataFrame)->pd.DataFrame:
     out["SYMBOL"]=out["SYMBOL"].astype(str).str.upper().str.strip()
     out["ACCOUNT"]=out["ACCOUNT"].fillna("ACCT").astype(str).str.strip()
     return out.reset_index(drop=True)
+
 def upsert_positions(std:pd.DataFrame):
     agg=std.groupby("SYMBOL",as_index=False).agg({"ACCOUNT":"first","QTY":"sum","CURRENCY":"first","COST_BASIS":"first","SOD_PRICE":"first"})
     if agg.empty:return
@@ -145,6 +146,31 @@ def upsert_positions(std:pd.DataFrame):
 def get_symbols():
     rows=run_sql(f"SELECT DISTINCT SYMBOL FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS WHERE SYMBOL IS NOT NULL")
     return [r[0] for r in rows] if rows else []
+
+
+def evaluate_flags_sql():
+    """Clears and recalculates price movement flags in the FLAGS table."""
+    # 1) Clear all existing flags from the table
+    run_sql(f"DELETE FROM {SF_DATABASE}.{SF_SCHEMA}.FLAGS;", fetch=False)
+
+    # 2) Insert new flags for any positions that have dropped below the threshold
+    insert_sql = f"""
+    INSERT INTO {SF_DATABASE}.{SF_SCHEMA}.FLAGS
+      (SYMBOL, PCT_CHANGE, SOD_PRICE, LAST_PRICE, THRESHOLD_PCT, TS)
+    SELECT
+      p.SYMBOL,
+      CASE WHEN p.SOD_PRICE IS NOT NULL AND p.LAST_PRICE IS NOT NULL AND p.SOD_PRICE <> 0
+           THEN (p.LAST_PRICE - p.SOD_PRICE) / p.SOD_PRICE END AS PCT_CHANGE,
+      p.SOD_PRICE,
+      p.LAST_PRICE,
+      {DROP_THRESHOLD_PCT},
+      p.LAST_TS
+    FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS p
+    WHERE p.SOD_PRICE IS NOT NULL
+      AND p.LAST_PRICE IS NOT NULL
+      AND p.LAST_PRICE <= p.SOD_PRICE * (1 - {DROP_THRESHOLD_PCT});
+    """
+    run_sql(insert_sql, fetch=False)
 
 # --- Main WebSocket Endpoint ---
 @app.websocket("/ws/{client_id}")
