@@ -8,22 +8,20 @@ import { Button } from "@/components/ui/button";
 import { Menu, ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import type { ClientSummary } from "@/types/portfolio";
-// **Import the WebSocket hook**
-import { useWebSocket } from '@/hooks/useWebSocket'; // <-- Make sure this path is correct
+// Import the WebSocket hook
+import { useWebSocket } from '@/hooks/useWebSocket'; // Make sure this path is correct
 
 const PortfolioManager = () => {
   const navigate = useNavigate();
   const [selectedClient, setSelectedClient] = useState("Quantum Capital Fund");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // **1. Add state to hold the list of clients**
+  const [clients, setClients] = useState<ClientSummary[]>([]);
 
-  // **1. Call the WebSocket hook to get live data and connection status**
-  // This is the single source of truth for your portfolio data now.
+  // Call the WebSocket hook to get live data and connection status
   const { isConnected, portfolio, error } = useWebSocket();
 
-  // **[REMOVED]** - The old useEffect and apiCall for loading data have been removed
-  // because the WebSocket now handles all data fetching.
-
-  // **2. A helper function to filter the portfolio for the selected client**
+  // Filter the full portfolio to get data for only the selected client
   const clientPortfolio = portfolio.filter(
     (p) => p.ACCOUNT === selectedClient
   );
@@ -57,22 +55,25 @@ const PortfolioManager = () => {
       </header>
 
       <div className="flex">
-        {/* Sidebar (No changes needed here) */}
+        {/* Sidebar */}
         <DashboardSidebar
           selectedClient={selectedClient}
           onSelectClient={setSelectedClient}
           isOpen={sidebarOpen}
+          // **2. Pass the required 'onClientsLoaded' prop to the sidebar**
+          // This fixes the crash.
+          onClientsLoaded={setClients}
         />
 
         {/* Main Content */}
         <main className="flex-1 p-6 space-y-6">
-          {/* **3. Handle errors from the WebSocket connection** */}
+          {/* Handle errors from the WebSocket connection */}
           {error && <div className="text-red-500 font-bold">Error: {error}</div>}
 
-          {/* **4. Display a loading state while connecting and waiting for data** */}
-          {!isConnected && !error && <div>Connecting to server...</div>}
+          {/* Display a loading state while connecting and waiting for data */}
+          {!isConnected && !error && <div>Connecting to server and fetching portfolio...</div>}
           
-          {/* **5. Once connected, render the main dashboard** */}
+          {/* Once connected, render the main dashboard */}
           {isConnected && !error && (
             <>
               {clientPortfolio.length > 0 ? (
@@ -90,7 +91,8 @@ const PortfolioManager = () => {
                   <AIInsights clientName={selectedClient} />
                 </>
               ) : (
-                <div>No positions found for client: {selectedClient}</div>
+                // This message shows after connecting if the selected client has no data
+                <div>Connected. No positions found for client: {selectedClient}</div>
               )}
             </>
           )}
