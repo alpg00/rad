@@ -33,6 +33,9 @@ npm run dev
 ```
 
 
+# use this
+uvicorn app:app --reload --port 8002 --reload-exclude "*.csv" --reload-exclude "*.xlsx"
+
 Visit `http://localhost:8080` to access the application.
 
 ## 🏗️ Architecture

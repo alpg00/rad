@@ -1,34 +1,23 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Upload, FileSpreadsheet, Check, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { toast } from "sonner";
 import { API_ENDPOINTS } from "@/config/api";
 
+// --- FIX 1: Update the props to match what the parent component provides ---
 interface ExcelUploadProps {
-  onClientChange: (client: string) => void;
-  clients: Array<{ name: string; id: string }>;
+  clientName: string;
+  onUploadSuccess: (ingestedAccountId: string) => void;
 }
 
-const ExcelUpload = ({ onClientChange, clients }: ExcelUploadProps) => {
+const ExcelUpload = ({ clientName, onUploadSuccess }: ExcelUploadProps) => {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<string | null>(null);
-  const [selectedClient, setSelectedClient] = useState(clients[0]?.name || "");
   const [isUploading, setIsUploading] = useState(false);
 
-  useEffect(() => {
-    if (clients.length > 0 && !selectedClient) {
-      setSelectedClient(clients[0].name);
-    }
-  }, [clients, selectedClient]);
+  // --- [REMOVED] --- Obsolete state and useEffect for managing client selection are gone.
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -41,49 +30,49 @@ const ExcelUpload = ({ onClientChange, clients }: ExcelUploadProps) => {
 
   const handleFileUpload = async (file: File) => {
     if (!file || (!file.name.endsWith(".xlsx") && !file.name.endsWith(".xls") && !file.name.endsWith(".csv"))) {
-      toast.error("Invalid file type", {
-        description: "Please upload an Excel or CSV file (.xlsx, .xls, or .csv)",
-      });
+      toast.error("Invalid file type", { description: "Please upload an Excel or CSV file." });
       return;
     }
 
-    if (!selectedClient) {
-      toast.error("Please select a client first");
+    // Use the clientName from props
+    if (!clientName) {
+      toast.error("Please select a client first.");
       return;
     }
 
     setIsUploading(true);
+    setUploadedFile(null); // Reset on new upload
     
     try {
-      // Create FormData to send file to Python backend
       const formData = new FormData();
       formData.append('file', file);
       
-      // Send clientName as query parameter since backend expects it that way
-      const url = `${API_ENDPOINTS.uploadExcel}?clientName=${encodeURIComponent(selectedClient)}`;
+      const url = `${API_ENDPOINTS.uploadExcel}?clientName=${encodeURIComponent(clientName)}`;
 
-      // Call Python backend API
       const response = await fetch(url, {
         method: 'POST',
         body: formData,
       });
 
       if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(error.error || 'Failed to process file');
+        const errorData = await response.json().catch(() => ({ detail: 'Failed to process file on server.' }));
+        throw new Error(errorData.detail || 'Failed to process file');
       }
 
-      const data = await response.json();
+      const result = await response.json();
 
       setUploadedFile(file.name);
-      toast.success("Positions ingested successfully", {
-        description: `Uploaded ${file.name} for ${selectedClient}.`,
-      });
+      toast.success("Positions synchronized successfully!");
+
+      // --- FIX 2: Call the onUploadSuccess function from the parent ---
+      // This tells the parent component to switch its view to the new account ID.
+      if (result.ingestedAccountId) {
+        onUploadSuccess(result.ingestedAccountId);
+      }
+      
     } catch (error: any) {
       console.error('Upload error:', error);
-      toast.error("Upload failed", {
-        description: error.message || "Failed to upload and process file",
-      });
+      toast.error("Upload failed", { description: error.message });
     } finally {
       setIsUploading(false);
     }
@@ -92,42 +81,20 @@ const ExcelUpload = ({ onClientChange, clients }: ExcelUploadProps) => {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    
     const file = e.dataTransfer.files[0];
-    handleFileUpload(file);
+    if (file) handleFileUpload(file);
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      handleFileUpload(file);
-    }
-  };
-
-  const handleClientChange = (value: string) => {
-    setSelectedClient(value);
-    onClientChange(value);
-    setUploadedFile(null);
+    if (file) handleFileUpload(file);
   };
 
   return (
     <Card className="p-6 bg-gradient-to-br from-card to-metric-card border-border">
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Custodian Upload</h3>
-          <Select value={selectedClient} onValueChange={handleClientChange} disabled={isUploading}>
-            <SelectTrigger className="w-[250px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {clients.map((client) => (
-                <SelectItem key={client.id} value={client.name}>
-                  {client.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        {/* --- FIX 3: Simplified header --- */}
+        <h3 className="text-lg font-semibold">Upload SOD Report for: {clientName}</h3>
 
         <div
           onDragOver={handleDragOver}
@@ -138,9 +105,7 @@ const ExcelUpload = ({ onClientChange, clients }: ExcelUploadProps) => {
             "border-2 border-dashed rounded-lg p-8 transition-all duration-200",
             "flex flex-col items-center justify-center gap-4 cursor-pointer",
             isUploading && "opacity-50 cursor-not-allowed",
-            isDragging
-              ? "border-primary bg-primary/5 shadow-glow-primary"
-              : "border-border hover:border-primary/50 hover:bg-accent/50"
+            isDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"
           )}
         >
           <input
@@ -154,36 +119,18 @@ const ExcelUpload = ({ onClientChange, clients }: ExcelUploadProps) => {
           
           {isUploading ? (
             <>
-              <div className="p-4 rounded-full bg-primary/20">
-                <Loader2 className="h-8 w-8 text-primary animate-spin" />
-              </div>
-              <div className="text-center">
-                <p className="text-sm font-medium text-foreground">
-                  Processing file...
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  This may take a moment
-                </p>
-              </div>
+              <Loader2 className="h-8 w-8 text-primary animate-spin" />
+              <p className="text-sm font-medium">Processing file...</p>
             </>
           ) : uploadedFile ? (
             <>
-              <div className="p-4 rounded-full bg-success/20">
-                <Check className="h-8 w-8 text-success" />
-              </div>
+              <Check className="h-8 w-8 text-green-500" />
               <div className="text-center">
-                <p className="text-sm font-medium text-foreground">
-                  {uploadedFile}
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Positions synchronized successfully
-                </p>
+                <p className="text-sm font-medium">{uploadedFile}</p>
+                <p className="text-xs text-muted-foreground mt-1">Positions synchronized successfully</p>
               </div>
               <Button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setUploadedFile(null);
-                }}
+                onClick={(e) => { e.stopPropagation(); setUploadedFile(null); }}
                 variant="outline"
                 size="sm"
               >
@@ -192,16 +139,10 @@ const ExcelUpload = ({ onClientChange, clients }: ExcelUploadProps) => {
             </>
           ) : (
             <>
-              <div className="p-4 rounded-full bg-primary/20">
-                <Upload className="h-8 w-8 text-primary" />
-              </div>
+              <Upload className="h-8 w-8 text-primary" />
               <div className="text-center">
-                <p className="text-sm font-medium text-foreground">
-                  Drag & drop Excel file here
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  or click to browse
-                </p>
+                <p className="text-sm font-medium">Drag & drop Excel file here</p>
+                <p className="text-xs text-muted-foreground mt-1">or click to browse</p>
               </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <FileSpreadsheet className="h-4 w-4" />
