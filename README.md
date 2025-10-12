@@ -32,6 +32,7 @@ uvicorn app:app --reload --port 8002
 npm run dev
 ```
 
+
 Visit `http://localhost:8080` to access the application.
 
 ## 🏗️ Architecture

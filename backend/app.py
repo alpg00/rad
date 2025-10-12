@@ -258,8 +258,7 @@ async def startup_event():
     print("[app] Starting up...")
     init_schema_if_needed()
     seed_clients_log()
-    print("--- MARKET DATA STREAM DISABLED FOR DEBUGGING ---")
-    # asyncio.create_task(safe_start_market_stream())
+    asyncio.create_task(safe_start_market_stream())
     asyncio.create_task(start_position_tracking())
     print("[app] Connection monitor is DISABLED.")
     if os.getenv("SKIP_PRICE_LOOP", "0") != "1":

@@ -34,11 +34,6 @@ def get_tracked_symbols():
     finally:
         conn.close()
 
-# --- [REMOVED] Conflicting WebSocket Code ---
-# The functions register_websocket, unregister_websocket, and broadcast_price_update
-# have been removed. Their responsibility now belongs exclusively to the ConnectionManager
-# in app.py to prevent conflicts and ensure a single source of truth.
-
 # --- [CORRECTED] Core Data Functions ---
 
 async def update_price_in_snowflake(symbol: str, price: float, bid: float = None, ask: float = None):
@@ -90,7 +85,7 @@ async def start_market_data_stream():
             symbols = get_tracked_symbols() or default_symbols
             if not symbols:
                 print("No symbols to track. Waiting...")
-                await asyncio.sleep(60)
+                await asyncio.sleep(20)
                 continue
 
             print(f"Attempting to stream market data for symbols: {symbols}")
@@ -139,8 +134,8 @@ async def start_market_data_stream():
                             await update_price_in_snowflake(symbol=symbol, price=price, bid=bid, ask=ask)
 
         except Exception as e:
-            print(f"Market data stream error: {e}. Retrying in 15 seconds...")
-            await asyncio.sleep(15)
+            print(f"Market data stream error: {e}. Retrying in 10 seconds...")
+            await asyncio.sleep(10)
 
 async def start_position_tracking():
     """Periodically updates all positions from the latest prices in the PRICES table."""
@@ -164,4 +159,4 @@ async def start_position_tracking():
                 conn.close()
         
         # This task runs every minute to catch any updates.
-        await asyncio.sleep(60)
+        await asyncio.sleep(20)
