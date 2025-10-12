@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import DashboardSidebar from "@/components/Dashboard/DashboardSidebar";
 import PLTracker from "@/components/Dashboard/PLTracker";
 import PositionChart from "@/components/Dashboard/PositionChart";
@@ -8,12 +8,35 @@ import { Button } from "@/components/ui/button";
 import { Menu, ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import type { ClientSummary } from "@/types/portfolio";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 const PortfolioManager = () => {
   const navigate = useNavigate();
   const [selectedClient, setSelectedClient] = useState("Quantum Capital Fund");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [clients, setClients] = useState<ClientSummary[]>([]);
+  const [clients, setClients] = useState<ClientSummary[]>();
+  const [trackedSymbols, setTrackedSymbols] = useState<string[]>([]);
+
+  useEffect(() => {
+    // Load positions for the selected client to get symbols
+    const loadPositions = async () => {
+      try {
+        const data = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+          method: 'POST',
+          body: JSON.stringify({ clientName: selectedClient })
+        });
+        
+        const symbols = data?.positions?.map((p: any) => p.symbol) || [];
+        setTrackedSymbols(symbols);
+      } catch (error) {
+        console.error('Error loading positions:', error);
+      }
+    };
+
+    if (selectedClient) {
+      loadPositions();
+    }
+  }, [selectedClient]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -60,16 +83,25 @@ const PortfolioManager = () => {
 
         {/* Main Content */}
         <main className="flex-1 p-6 space-y-6">
-          {/* P&L Tracker */}
-          <PLTracker clientName={selectedClient} />
+          {/* P&L Tracker with real-time updates */}
+          <PLTracker 
+            clientName={selectedClient} 
+            symbols={trackedSymbols}
+          />
 
           {/* Chart and Risk Metrics */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
-              <PositionChart clientName={selectedClient} />
+              <PositionChart 
+                clientName={selectedClient} 
+                symbols={trackedSymbols}
+              />
             </div>
             <div>
-              <RiskMetrics clientName={selectedClient} />
+              <RiskMetrics 
+                clientName={selectedClient}
+                symbols={trackedSymbols}
+              />
             </div>
           </div>
 

@@ -10,6 +10,8 @@ import {
 } from "recharts";
 import { Loader2 } from "lucide-react";
 import { API_ENDPOINTS, apiCall } from "@/config/api";
+import { useWebSocket } from "@/hooks/useWebSocket";
+import type { ReactElement } from 'react';
 
 interface DataPoint {
   time: string;
@@ -18,20 +20,18 @@ interface DataPoint {
 
 interface PositionChartProps {
   clientName: string;
+  symbols?: string[];  // Optional list of symbols to track
 }
 
-const PositionChart = ({ clientName }: PositionChartProps) => {
+const PositionChart = ({ clientName, symbols = [] }: PositionChartProps) => {
   const [data, setData] = useState<DataPoint[]>([]);
   const [loading, setLoading] = useState(true);
+  const [portfolioValue, setPortfolioValue] = useState<number>(0);
+  const { connected, priceUpdates } = useWebSocket(symbols);
 
+  // Load initial portfolio value and setup chart
   useEffect(() => {
     loadInitialData();
-    
-    const interval = setInterval(() => {
-      updateData();
-    }, 30000); // Update every 30 seconds
-
-    return () => clearInterval(interval);
   }, [clientName]);
 
   const loadInitialData = async () => {
@@ -39,7 +39,6 @@ const PositionChart = ({ clientName }: PositionChartProps) => {
     const initialData: DataPoint[] = [];
     const now = new Date();
     
-    // Get current portfolio value
     try {
       const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
         method: 'POST',
@@ -47,14 +46,14 @@ const PositionChart = ({ clientName }: PositionChartProps) => {
       });
 
       const currentValue = analysis?.totals?.market_value || 0;
+      setPortfolioValue(currentValue);
       
-      // Generate historical data points (simulated for demo)
+      // Initialize with current value for the last 30 minutes
       for (let i = 30; i >= 0; i--) {
         const time = new Date(now.getTime() - i * 60000);
-        const variance = (Math.random() - 0.5) * 0.02; // ±2% variance
         initialData.push({
           time: time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          value: currentValue * (1 + variance),
+          value: currentValue,
         });
       }
       
@@ -66,27 +65,38 @@ const PositionChart = ({ clientName }: PositionChartProps) => {
     }
   };
 
-  const updateData = async () => {
-    try {
-      const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
-        method: 'POST',
-        body: JSON.stringify({ clientName })
-      });
+  // Update data when we receive price updates
+  useEffect(() => {
+    if (Object.keys(priceUpdates).length === 0) return;
 
-      const currentValue = analysis?.totals?.market_value || 0;
-      
-      setData((prevData) => {
-        const newData = [...prevData.slice(1)];
-        newData.push({
-          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          value: currentValue,
+    const updatePortfolioValue = async () => {
+      try {
+        // Calculate new portfolio value based on price updates
+        const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+          method: 'POST',
+          body: JSON.stringify({ clientName })
         });
-        return newData;
-      });
-    } catch (error) {
-      console.error('Error updating chart:', error);
-    }
-  };
+
+        const newPortfolioValue = analysis?.totals?.market_value || portfolioValue;
+        setPortfolioValue(newPortfolioValue);
+
+        // Update chart with new value
+        const now = new Date();
+        setData((prevData) => {
+          const newData = [...prevData.slice(1)];
+          newData.push({
+            time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            value: newPortfolioValue,
+          });
+          return newData;
+        });
+      } catch (error) {
+        console.error('Error updating portfolio value:', error);
+      }
+    };
+
+    updatePortfolioValue();
+  }, [priceUpdates, clientName, portfolioValue]);
 
   if (loading) {
     return (

@@ -3,27 +3,32 @@ import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown, Loader2 } from "lucide-react";
 import { API_ENDPOINTS, apiCall } from "@/config/api";
+import { useWebSocket } from "@/hooks/useWebSocket";
+import { ConnectionStatus } from "@/components/Dashboard/ConnectionStatus";
 
 interface PLTrackerProps {
   clientName: string;
+  symbols?: string[];
 }
 
-const PLTracker = ({ clientName }: PLTrackerProps) => {
+const PLTracker = ({ clientName, symbols = [] }: PLTrackerProps) => {
   const [pnl, setPnl] = useState(0);
   const [percentage, setPercentage] = useState(0);
   const [isPositive, setIsPositive] = useState(true);
   const [loading, setLoading] = useState(true);
+  const { connected, priceUpdates } = useWebSocket(symbols);
 
+  // Initial load and setup WebSocket subscription
   useEffect(() => {
     loadPortfolio();
-    
-    // Refresh every 30 seconds
-    const interval = setInterval(() => {
-      loadPortfolio();
-    }, 30000);
-
-    return () => clearInterval(interval);
   }, [clientName]);
+
+  // Handle real-time price updates
+  useEffect(() => {
+    if (Object.keys(priceUpdates).length > 0) {
+      loadPortfolio();
+    }
+  }, [priceUpdates]);
 
   const loadPortfolio = async () => {
     try {
@@ -86,10 +91,7 @@ const PLTracker = ({ clientName }: PLTrackerProps) => {
             )}
             {percentage.toFixed(2)}%
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-            <span className="text-xs text-muted-foreground">Live</span>
-          </div>
+          <ConnectionStatus symbols={symbols} />
         </div>
       </div>
     </Card>

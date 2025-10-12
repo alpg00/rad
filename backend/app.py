@@ -8,8 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import snowflake.connector as sf
 import websockets
+from typing import List, Dict, Optional
 
 from pathlib import Path
+from market_data import (
+    start_market_data_stream, 
+    start_position_tracking,
+    register_websocket,
+    unregister_websocket
+)
 
 # Prefer backend/.env if present, otherwise fall back to repo-level .env
 env_path = Path(__file__).resolve().parent / ".env"
@@ -31,9 +38,7 @@ DROP_THRESHOLD_PCT = float(os.getenv("DROP_THRESHOLD_PCT", "0.05"))
 
 ALPACA_KEY_ID     = os.getenv("ALPACA_KEY_ID")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
-ALPACA_FEED       = os.getenv("ALPACA_FEED", "iex")
 ALPACA_DEMO       = os.getenv("ALPACA_DEMO", "1") == "1"
-ALPACA_WS_URL     = f"wss://stream.data.alpaca.markets/v2/{ALPACA_FEED}"
 
 # ----------- APP -----------
 app = FastAPI(title="RAD — Snowflake Backend", version="1.0.0")
@@ -41,6 +46,154 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"]
 )
+
+@app.websocket("/ws/market-data")
+async def market_data_websocket(websocket: WebSocket):
+    try:
+        await register_websocket(websocket)
+        while True:
+            try:
+                # Keep the connection alive
+                data = await websocket.receive_text()
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                print(f"Error in WebSocket connection: {e}")
+                break
+    finally:
+        await unregister_websocket(websocket)
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, List[WebSocket]] = {}  # client_id -> [WebSocket]
+        self.price_updates: Dict[str, Dict] = {}
+        self.connection_times: Dict[str, datetime] = {}  # client_id -> last_message_time
+        self.max_connections_per_client = 5
+        self.message_rate_limit = 1  # messages per 30 seconds
+        self.message_counts: Dict[str, List[float]] = {}  # client_id -> [timestamps]
+        print("ConnectionManager initialized")
+
+    async def connect(self, websocket: WebSocket, client_id: str):
+        print(f"Connection attempt from client {client_id}")
+        # Check connection limit
+        if client_id in self.active_connections:
+            if len(self.active_connections[client_id]) >= self.max_connections_per_client:
+                print(f"Too many connections for client {client_id}")
+                await websocket.close(code=1008, reason="Too many connections")
+                return False
+
+        try:
+            await websocket.accept()
+            print(f"Connection accepted for client {client_id}")
+            
+            if client_id not in self.active_connections:
+                self.active_connections[client_id] = []
+            self.active_connections[client_id].append(websocket)
+            self.connection_times[client_id] = datetime.now()
+            self.message_counts[client_id] = []
+            
+            # Send connection confirmation
+            await websocket.send_json({
+                "type": "connection_status",
+                "status": "connected",
+                "client_id": client_id
+            })
+            
+            return True
+        except Exception as e:
+            print(f"Error accepting connection for client {client_id}: {e}")
+            return False
+
+    async def broadcast_price_update(self, symbol: str, price_data: Dict):
+        self.price_updates[symbol] = price_data
+        dead_connections = []
+
+        # Build the message once
+        message = {
+            "type": "price_update",
+            "symbol": symbol,
+            "data": price_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        message_str = json.dumps(message)
+
+        # Process each client and its connections
+        client_updates = []
+        for client_id, connections in self.active_connections.items():
+            if not await self.check_rate_limit(client_id):
+                continue
+
+            client_updates.extend((websocket, client_id) for websocket in connections)
+
+        # Send updates in parallel
+        async def send_update(websocket: WebSocket, client_id: str):
+            try:
+                await websocket.send_text(message_str)
+                return None
+            except (WebSocketDisconnect, Exception) as e:
+                print(f"Error sending to client {client_id}: {e}")
+                return (websocket, client_id)
+
+        # Send updates concurrently
+        dead = await asyncio.gather(
+            *(send_update(ws, cid) for ws, cid in client_updates)
+        )
+        dead_connections = [x for x in dead if x is not None]
+
+        # Clean up dead connections
+        for websocket, client_id in dead_connections:
+            self.disconnect(websocket, client_id)
+
+    def disconnect(self, websocket: WebSocket, client_id: str):
+        if client_id in self.active_connections:
+            try:
+                self.active_connections[client_id].remove(websocket)
+                if not self.active_connections[client_id]:
+                    del self.active_connections[client_id]
+                    del self.connection_times[client_id]
+                    del self.message_counts[client_id]
+            except ValueError:
+                pass
+
+    async def check_rate_limit(self, client_id: str) -> bool:
+        now = time.time()
+        if client_id in self.message_counts:
+            # Remove messages older than 30 seconds
+            self.message_counts[client_id] = [
+                ts for ts in self.message_counts[client_id] 
+                if now - ts <= 30.0
+            ]
+            if len(self.message_counts[client_id]) >= self.message_rate_limit:
+                return False
+            self.message_counts[client_id].append(now)
+        else:
+            self.message_counts[client_id] = [now]
+        return True
+
+    async def monitor_connections(self):
+        """Monitor connection health and clean up stale connections"""
+        while True:
+            now = datetime.now()
+            dead_connections = []
+
+            for client_id, connections in self.active_connections.items():
+                last_time = self.connection_times.get(client_id)
+                if last_time and (now - last_time).seconds > 60:
+                    for websocket in connections:
+                        dead_connections.append((websocket, client_id))
+
+            for websocket, client_id in dead_connections:
+                try:
+                    await websocket.close(code=1001, reason="Connection timeout")
+                except Exception:
+                    pass
+                self.disconnect(websocket, client_id)
+
+            await asyncio.sleep(30)  # Check every 30 seconds
+
+manager = ConnectionManager()
 
 # ----------- SNOWFLAKE HELPERS -----------
 def sf_conn():
@@ -78,6 +231,95 @@ def init_schema_if_needed():
     ddl = schema_path.read_text()
     for stmt in [s.strip() for s in ddl.split(";") if s.strip()]:
         run_sql(stmt, fetch=False)
+
+# WebSocket endpoint for real-time updates
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    client_id: str
+):
+    print(f"New WebSocket connection request from client: {client_id}")
+    
+    # Attempt to connect
+    if not await manager.connect(websocket, client_id):
+        print(f"Connection rejected for client: {client_id}")
+        return
+
+    print(f"WebSocket connection accepted for client: {client_id}")
+    try:
+        # Send initial price data
+        symbols = get_symbols()
+        price_data = {}
+        for symbol in symbols:
+            rows = run_sql(f"SELECT BID, ASK, P, TS FROM {SF_DATABASE}.{SF_SCHEMA}.PRICES WHERE SYMBOL = '{symbol}'")
+            if rows:
+                bid, ask, price, ts = rows[0]
+                price_data[symbol] = {
+                    "price": price,
+                    "bid": bid,
+                    "ask": ask,
+                    "timestamp": ts.isoformat() if ts else None
+                }
+        
+        if price_data:
+            print(f"Sending initial price data to client {client_id}: {price_data}")
+            await websocket.send_json({
+                "type": "price_updates",
+                "data": price_data
+            })
+
+        while True:
+            try:
+                data = await websocket.receive_json()
+                print(f"Received message from client {client_id}: {data}")
+                
+                # Update last message time
+                manager.connection_times[client_id] = datetime.now()
+
+                # Handle the message
+                match data.get("type"):
+                    case "subscribe":
+                        symbols = data.get("symbols", [])
+                        print(f"Client {client_id} subscribing to symbols: {symbols}")
+                        # Send current prices for subscribed symbols
+                        for symbol in symbols:
+                            rows = run_sql(f"SELECT BID, ASK, P, TS FROM {SF_DATABASE}.{SF_SCHEMA}.PRICES WHERE SYMBOL = '{symbol}'")
+                            if rows:
+                                bid, ask, price, ts = rows[0]
+                                await websocket.send_json({
+                                    "type": "price_update",
+                                    "symbol": symbol,
+                                    "data": {
+                                        "price": price,
+                                        "bid": bid,
+                                        "ask": ask,
+                                        "timestamp": ts.isoformat() if ts else None
+                                    }
+                                })
+                    case "ping":
+                        await websocket.send_json({"type": "pong"})
+            except json.JSONDecodeError:
+                print(f"Invalid JSON received from client {client_id}")
+                continue
+    except WebSocketDisconnect:
+        print(f"WebSocket disconnected for client: {client_id}")
+        manager.disconnect(websocket, client_id)
+    except Exception as e:
+        print(f"Error in websocket handler for client {client_id}: {e}")
+        manager.disconnect(websocket, client_id)
+
+@app.on_event("startup")
+async def startup_event():
+    # Initialize database schema if needed
+    init_schema_if_needed()
+    seed_clients_log()
+    
+    # Start market data stream in the background
+    asyncio.create_task(start_market_data_stream())
+    asyncio.create_task(start_position_tracking())
+    
+    # Start connection monitoring
+    asyncio.create_task(manager.monitor_connections())
 
 def seed_clients_log():
     # Read clients table and print count
@@ -322,6 +564,23 @@ async def stream_snapshot(ws: WebSocket):
         except ValueError: pass
 
 
+# Initialize database schema and start data streams
+@app.on_event("startup")
+async def startup_event():
+    # Initialize schema
+    init_schema_if_needed()
+    
+    # Start market data stream
+    from market_data import start_market_data_stream, start_position_tracking
+    asyncio.create_task(start_market_data_stream())
+    asyncio.create_task(start_position_tracking())
+    
+    # Start price loop for demo/mock data if needed
+    if os.getenv("SKIP_PRICE_LOOP", "0") != "1":
+        asyncio.create_task(mock_price_loop() if (ALPACA_DEMO or not (ALPACA_KEY_ID and ALPACA_SECRET_KEY)) else alpaca_price_loop())
+    else:
+        print("[app] SKIP_PRICE_LOOP=1 set; not starting price loop")
+
 # Ensure backend API routes are registered by importing backend module.
 # This import is intentionally at the bottom to avoid circular import issues
 # during module initialization; backend will import this `app` and attach
@@ -358,7 +617,7 @@ async def mock_price_loop():
         await asyncio.sleep(1)
 
 async def alpaca_price_loop():
-    url = f"wss://stream.data.alpaca.markets/v2/{ALPACA_FEED}"
+    url = "wss://stream.data.alpaca.markets/v2/iex"
     async with websockets.connect(url, extra_headers={"Content-Type":"application/json"}, ping_interval=20) as ws:
         await ws.send(json.dumps({"action":"auth","key":ALPACA_KEY_ID,"secret":ALPACA_SECRET_KEY}))
         resp = json.loads(await ws.recv())
