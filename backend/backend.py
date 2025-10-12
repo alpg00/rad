@@ -210,3 +210,8 @@ async def get_market_data(ticker: str):
 main_app.include_router(router)
 
 print("[backend] API router registered on main app under /api")
+try:
+    from app import manager as imported_manager
+    print(f"--- [backend.py] Manager Imported --- ID: {id(imported_manager)}")
+except Exception as e:
+    print(f"--- [backend.py] FAILED to import manager: {e}")

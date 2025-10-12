@@ -194,7 +194,7 @@ class ConnectionManager:
             await asyncio.sleep(30)  # Check every 30 seconds
 
 manager = ConnectionManager()
-
+print(f"--- [app.py] Manager Initialized --- ID: {id(manager)}") 
 # ----------- SNOWFLAKE HELPERS -----------
 def sf_conn():
     return sf.connect(
@@ -232,94 +232,142 @@ def init_schema_if_needed():
     for stmt in [s.strip() for s in ddl.split(";") if s.strip()]:
         run_sql(stmt, fetch=False)
 
-# WebSocket endpoint for real-time updates
+# # WebSocket endpoint for real-time updates
+# @app.websocket("/ws/{client_id}")
+# async def websocket_endpoint(
+#     websocket: WebSocket,
+#     client_id: str
+# ):
+#     print(f"New WebSocket connection request from client: {client_id}")
+    
+#     # Attempt to connect
+#     if not await manager.connect(websocket, client_id):
+#         print(f"Connection rejected for client: {client_id}")
+#         return
+
+#     print(f"WebSocket connection accepted for client: {client_id}")
+#     try:
+#         # Send initial price data
+#         symbols = get_symbols()
+#         price_data = {}
+#         for symbol in symbols:
+#             rows = run_sql(f"SELECT BID, ASK, P, TS FROM {SF_DATABASE}.{SF_SCHEMA}.PRICES WHERE SYMBOL = '{symbol}'")
+#             if rows:
+#                 bid, ask, price, ts = rows[0]
+#                 price_data[symbol] = {
+#                     "price": price,
+#                     "bid": bid,
+#                     "ask": ask,
+#                     "timestamp": ts.isoformat() if ts else None
+#                 }
+        
+#         if price_data:
+#             print(f"Sending initial price data to client {client_id}: {price_data}")
+#             await websocket.send_json({
+#                 "type": "price_updates",
+#                 "data": price_data
+#             })
+
+#         while True:
+#             try:
+#                 data = await websocket.receive_json()
+#                 print(f"Received message from client {client_id}: {data}")
+                
+#                 # Update last message time
+#                 manager.connection_times[client_id] = datetime.now()
+
+#                 # Handle the message
+#                 match data.get("type"):
+#                     case "subscribe":
+#                         symbols = data.get("symbols", [])
+#                         print(f"Client {client_id} subscribing to symbols: {symbols}")
+#                         # Send current prices for subscribed symbols
+#                         for symbol in symbols:
+#                             rows = run_sql(f"SELECT BID, ASK, P, TS FROM {SF_DATABASE}.{SF_SCHEMA}.PRICES WHERE SYMBOL = '{symbol}'")
+#                             if rows:
+#                                 bid, ask, price, ts = rows[0]
+#                                 await websocket.send_json({
+#                                     "type": "price_update",
+#                                     "symbol": symbol,
+#                                     "data": {
+#                                         "price": price,
+#                                         "bid": bid,
+#                                         "ask": ask,
+#                                         "timestamp": ts.isoformat() if ts else None
+#                                     }
+#                                 })
+#                     case "ping":
+#                         await websocket.send_json({"type": "pong"})
+#             except json.JSONDecodeError:
+#                 print(f"Invalid JSON received from client {client_id}")
+#                 continue
+#     except WebSocketDisconnect:
+#         print(f"WebSocket disconnected for client: {client_id}")
+#         manager.disconnect(websocket, client_id)
+#     except Exception as e:
+#         print(f"Error in websocket handler for client {client_id}: {e}")
+#         manager.disconnect(websocket, client_id)
+
+# DELETE your old websocket_endpoint function and REPLACE it with this one
+
 @app.websocket("/ws/{client_id}")
-async def websocket_endpoint(
-    websocket: WebSocket,
-    client_id: str
-):
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
     print(f"New WebSocket connection request from client: {client_id}")
     
-    # Attempt to connect
     if not await manager.connect(websocket, client_id):
         print(f"Connection rejected for client: {client_id}")
         return
 
     print(f"WebSocket connection accepted for client: {client_id}")
-    try:
-        # Send initial price data
-        symbols = get_symbols()
-        price_data = {}
-        for symbol in symbols:
-            rows = run_sql(f"SELECT BID, ASK, P, TS FROM {SF_DATABASE}.{SF_SCHEMA}.PRICES WHERE SYMBOL = '{symbol}'")
-            if rows:
-                bid, ask, price, ts = rows[0]
-                price_data[symbol] = {
-                    "price": price,
-                    "bid": bid,
-                    "ask": ask,
-                    "timestamp": ts.isoformat() if ts else None
-                }
-        
-        if price_data:
-            print(f"Sending initial price data to client {client_id}: {price_data}")
-            await websocket.send_json({
-                "type": "price_updates",
-                "data": price_data
-            })
-
-        while True:
-            try:
+    
+    # This background task will listen for messages from the client
+    async def receiver():
+        try:
+            while True:
                 data = await websocket.receive_json()
                 print(f"Received message from client {client_id}: {data}")
                 
-                # Update last message time
+                # Update the last message time to keep the connection alive
                 manager.connection_times[client_id] = datetime.now()
 
-                # Handle the message
-                match data.get("type"):
-                    case "subscribe":
-                        symbols = data.get("symbols", [])
-                        print(f"Client {client_id} subscribing to symbols: {symbols}")
-                        # Send current prices for subscribed symbols
-                        for symbol in symbols:
-                            rows = run_sql(f"SELECT BID, ASK, P, TS FROM {SF_DATABASE}.{SF_SCHEMA}.PRICES WHERE SYMBOL = '{symbol}'")
-                            if rows:
-                                bid, ask, price, ts = rows[0]
-                                await websocket.send_json({
-                                    "type": "price_update",
-                                    "symbol": symbol,
-                                    "data": {
-                                        "price": price,
-                                        "bid": bid,
-                                        "ask": ask,
-                                        "timestamp": ts.isoformat() if ts else None
-                                    }
-                                })
-                    case "ping":
-                        await websocket.send_json({"type": "pong"})
-            except json.JSONDecodeError:
-                print(f"Invalid JSON received from client {client_id}")
-                continue
+                # Handle different message types
+                if data.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+                # You can add other message handlers here, like "subscribe"
+                
+        except (WebSocketDisconnect, json.JSONDecodeError):
+            # Let the main loop handle the disconnect
+            pass
+        except Exception as e:
+            print(f"Error in receiver for client {client_id}: {e}")
+            # Also let the main loop handle disconnect
+            pass
+
+    receiver_task = asyncio.create_task(receiver())
+
+    try:
+        # Send initial data right after connecting
+        initial_snapshot = await _snapshot_data()
+        initial_flags = await _flags_data()
+        await websocket.send_json({
+            "type": "initial_state",
+            "snapshot": initial_snapshot,
+            "flags": initial_flags
+        }, default=str)
+        
+        # Main loop to keep the connection alive.
+        # The broadcast will send updates, and the receiver_task handles inbound messages.
+        while True:
+            await asyncio.sleep(60) # Sleep to prevent a busy loop
+
     except WebSocketDisconnect:
         print(f"WebSocket disconnected for client: {client_id}")
-        manager.disconnect(websocket, client_id)
     except Exception as e:
         print(f"Error in websocket handler for client {client_id}: {e}")
+    finally:
+        print(f"Cleaning up connection for client: {client_id}")
+        receiver_task.cancel() # Stop the background listener
         manager.disconnect(websocket, client_id)
-
-@app.on_event("startup")
-async def startup_event():
-    # Initialize database schema if needed
-    init_schema_if_needed()
-    seed_clients_log()
-    
-    # Start market data stream in the background
-    asyncio.create_task(start_market_data_stream())
-    asyncio.create_task(start_position_tracking())
-    
-    # Start connection monitoring
-    asyncio.create_task(manager.monitor_connections())
 
 def seed_clients_log():
     # Read clients table and print count
@@ -564,32 +612,36 @@ async def stream_snapshot(ws: WebSocket):
         except ValueError: pass
 
 
-# Initialize database schema and start data streams
+# PASTE THIS NEW COMBINED FUNCTION IN
 @app.on_event("startup")
 async def startup_event():
-    # Initialize schema
-    init_schema_if_needed()
+    print("[app] Starting up...")
     
-    # Start market data stream
+    # 1. Initialize database schema and log clients
+    init_schema_if_needed()
+    seed_clients_log()
+    
+    # 2. Start background tasks for market data
     from market_data import start_market_data_stream, start_position_tracking
     asyncio.create_task(start_market_data_stream())
     asyncio.create_task(start_position_tracking())
     
-    # Start price loop for demo/mock data if needed
+    # 3. Start the ConnectionManager's monitoring loop (this was being skipped!)
+    # asyncio.create_task(manager.monitor_connections())
+    print("[app] Connection monitor started.")
+    
+    # 4. Start the correct price loop
     if os.getenv("SKIP_PRICE_LOOP", "0") != "1":
-        asyncio.create_task(mock_price_loop() if (ALPACA_DEMO or not (ALPACA_KEY_ID and ALPACA_SECRET_KEY)) else alpaca_price_loop())
+        print("[app] Starting price loop...")
+        is_demo = ALPACA_DEMO or not (ALPACA_KEY_ID and ALPACA_SECRET_KEY)
+        if is_demo:
+            asyncio.create_task(mock_price_loop())
+            print("[app] Mock price loop started.")
+        else:
+            asyncio.create_task(alpaca_price_loop())
+            print("[app] Alpaca price loop started.")
     else:
-        print("[app] SKIP_PRICE_LOOP=1 set; not starting price loop")
-
-# Ensure backend API routes are registered by importing backend module.
-# This import is intentionally at the bottom to avoid circular import issues
-# during module initialization; backend will import this `app` and attach
-# its router to it.
-try:
-    import backend  # noqa: F401
-    print("[app] backend module imported; /api routes should be registered")
-except Exception as e:
-    print("[app] failed to import backend module:", e)
+        print("[app] SKIP_PRICE_LOOP=1; not starting price loop.")
 
 # ----------- PRICE LOOPS -----------
 async def mock_price_loop():

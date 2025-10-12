@@ -26,7 +26,7 @@ cd backend
 python init_db.py
 
 # Start backend (Terminal 1)
-uvicorn app:app --reload --port 8001
+uvicorn app:app --reload --port 8002
 
 # Start frontend (Terminal 2)
 npm run dev
@@ -35,7 +35,6 @@ npm run dev
 Visit `http://localhost:8080` to access the application.
 
 ## 🏗️ Architecture
-
 ### Frontend (TypeScript + React + Vite)
 - Modern React with TypeScript
 - Vite for fast development
