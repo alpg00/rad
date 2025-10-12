@@ -1,7 +1,7 @@
 // Backend API Configuration
 // Update these URLs to point to your Python backend endpoints
 
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8001';
 
 export const API_ENDPOINTS = {
   // Excel upload and ingestion

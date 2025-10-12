@@ -1,6 +1,22 @@
-# RAD Portfolio Management - Setup Guide
+# RAD (Risk Analysis Dashboard)
 
-This guide will help you connect the Lovable frontend to your Python backend.
+A modern web application for portfolio management, risk analysis, and AI-powered insights.
+
+## System Overview
+
+RAD is a full-stack application that combines:
+- Frontend: React + TypeScript + Vite
+- Backend: FastAPI (Python)
+- Database: Snowflake
+- Market Data: Alpaca API
+
+### Key Features
+- Real-time portfolio tracking
+- Risk metrics visualization
+- AI-powered market insights
+- Multi-custodian support
+- Excel-based position ingestion
+- Interactive dashboards
 
 ## Prerequisites
 
