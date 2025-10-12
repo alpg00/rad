@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card } from "@/components/ui/card";
 import {
   ResponsiveContainer,
@@ -9,101 +9,86 @@ import {
   Tooltip,
 } from "recharts";
 import { Loader2 } from "lucide-react";
-import { API_ENDPOINTS, apiCall } from "@/config/api";
 
-interface DataPoint {
+// Define the shape of the data points for our chart's history
+interface ChartDataPoint {
   time: string;
   value: number;
 }
 
-interface PositionChartProps {
-  clientName: string;
+// Define the shape of a single position object received from the parent
+interface Position {
+  QTY: number;
+  LAST_PRICE: number | null;
+  SOD_PRICE: number | null;
 }
 
-const PositionChart = ({ clientName }: PositionChartProps) => {
-  const [data, setData] = useState<DataPoint[]>([]);
-  const [loading, setLoading] = useState(true);
+// The component now only needs one prop: the live data array
+interface PositionChartProps {
+  data: Position[];
+}
 
+const PositionChart = ({ data }: PositionChartProps) => {
+  // This state holds the historical data points for the line chart
+  const [chartHistory, setChartHistory] = useState<ChartDataPoint[]>([]);
+
+  // --- 1. Calculate the current portfolio value from props ---
+  // useMemo prevents this expensive calculation from running on every single render,
+  // only when the 'data' prop actually changes.
+  const currentPortfolioValue = useMemo(() => {
+    if (!data || data.length === 0) {
+      return 0;
+    }
+    return data.reduce((total, position) => {
+      const price = position.LAST_PRICE ?? position.SOD_PRICE ?? 0;
+      const value = (position.QTY || 0) * price;
+      return total + value;
+    }, 0);
+  }, [data]);
+
+  // --- 2. Update the chart's history when the portfolio value changes ---
   useEffect(() => {
-    loadInitialData();
-    
-    const interval = setInterval(() => {
-      updateData();
-    }, 30000); // Update every 30 seconds
+    // Don't update the chart if the value is zero (still loading)
+    if (currentPortfolioValue === 0) {
+      return;
+    }
 
-    return () => clearInterval(interval);
-  }, [clientName]);
-
-  const loadInitialData = async () => {
-    setLoading(true);
-    const initialData: DataPoint[] = [];
     const now = new Date();
-    
-    // Get current portfolio value
-    try {
-      const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
-        method: 'POST',
-        body: JSON.stringify({ clientName })
-      });
+    const newPoint: ChartDataPoint = {
+      time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      value: currentPortfolioValue,
+    };
 
-      const currentValue = analysis?.totals?.market_value || 0;
-      
-      // Generate historical data points (simulated for demo)
-      for (let i = 30; i >= 0; i--) {
-        const time = new Date(now.getTime() - i * 60000);
-        const variance = (Math.random() - 0.5) * 0.02; // ±2% variance
-        initialData.push({
-          time: time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          value: currentValue * (1 + variance),
-        });
+    setChartHistory((prevHistory) => {
+      // Keep the chart history at a fixed length (e.g., 30 points)
+      const updatedHistory = [...prevHistory, newPoint];
+      if (updatedHistory.length > 30) {
+        return updatedHistory.slice(updatedHistory.length - 30);
       }
-      
-      setData(initialData);
-    } catch (error) {
-      console.error('Error loading chart data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+      return updatedHistory;
+    });
+  }, [currentPortfolioValue]);
 
-  const updateData = async () => {
-    try {
-      const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
-        method: 'POST',
-        body: JSON.stringify({ clientName })
-      });
 
-      const currentValue = analysis?.totals?.market_value || 0;
-      
-      setData((prevData) => {
-        const newData = [...prevData.slice(1)];
-        newData.push({
-          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          value: currentValue,
-        });
-        return newData;
-      });
-    } catch (error) {
-      console.error('Error updating chart:', error);
-    }
-  };
-
-  if (loading) {
+  // --- 3. Guard Clause for Loading State ---
+  // Show a loader if the parent hasn't sent any data yet.
+  if (!data || data.length === 0 || chartHistory.length === 0) {
     return (
       <Card className="p-6 bg-gradient-to-br from-card to-metric-card border-border">
         <h3 className="text-lg font-semibold mb-4">Portfolio Value</h3>
-        <div className="flex items-center justify-center h-64">
+        <div className="flex items-center justify-center h-[300px]">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
         </div>
       </Card>
     );
   }
 
+  // --- 4. Render the Chart ---
   return (
     <Card className="p-6 bg-gradient-to-br from-card to-metric-card border-border">
       <h3 className="text-lg font-semibold mb-4">Portfolio Value</h3>
       <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={data}>
+        <LineChart data={chartHistory}>
           <XAxis
             dataKey="time"
             stroke="hsl(var(--muted-foreground))"
@@ -112,13 +97,13 @@ const PositionChart = ({ clientName }: PositionChartProps) => {
           <YAxis
             stroke="hsl(var(--muted-foreground))"
             tick={{ fontSize: 12 }}
-            tickFormatter={(value) => `$${(value / 1000000).toFixed(2)}M`}
+            domain={['dataMin', 'dataMax']} // Makes the Y-axis scale dynamically
+            tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
           />
           <Tooltip
             contentStyle={{
               backgroundColor: "hsl(var(--card))",
               border: "1px solid hsl(var(--border))",
-              borderRadius: "8px",
             }}
             formatter={(value: number) =>
               `$${value.toLocaleString(undefined, {
@@ -133,7 +118,6 @@ const PositionChart = ({ clientName }: PositionChartProps) => {
             stroke="hsl(var(--primary))"
             strokeWidth={2}
             dot={false}
-            animationDuration={300}
           />
         </LineChart>
       </ResponsiveContainer>

@@ -1,7 +1,7 @@
 // Backend API Configuration
-// Update these URLs to point to your Python backend endpoints
 
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+// **FIXED**: The port is now 8002 to match your Python backend server.
+const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8002';
 
 export const API_ENDPOINTS = {
   // Excel upload and ingestion
@@ -38,8 +38,8 @@ export async function apiCall<T>(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || `API call failed: ${response.statusText}`);
+    const error = await response.json().catch(() => ({ detail: 'Unknown API error' }));
+    throw new Error(error.detail || `API call failed: ${response.statusText}`);
   }
 
   return response.json();

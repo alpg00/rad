@@ -8,24 +8,31 @@ import { Button } from "@/components/ui/button";
 import { Menu, ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import type { ClientSummary } from "@/types/portfolio";
+// Import the WebSocket hook
+import { useWebSocket } from '@/hooks/useWebSocket'; // Make sure this path is correct
 
 const PortfolioManager = () => {
   const navigate = useNavigate();
   const [selectedClient, setSelectedClient] = useState("Quantum Capital Fund");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // **1. Add state to hold the list of clients**
   const [clients, setClients] = useState<ClientSummary[]>([]);
+
+  // Call the WebSocket hook to get live data and connection status
+  const { isConnected, portfolio, error } = useWebSocket();
+
+  // Filter the full portfolio to get data for only the selected client
+  const clientPortfolio = portfolio.filter(
+    (p) => p.ACCOUNT === selectedClient
+  );
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      {/* Header */}
+      {/* Header (No changes needed here) */}
       <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="flex items-center justify-between px-6 py-4">
           <div className="flex items-center gap-4">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => navigate("/")}
-            >
+            <Button variant="ghost" size="icon" onClick={() => navigate("/")}>
               <ArrowLeft className="h-5 w-5" />
             </Button>
             <Button
@@ -43,9 +50,7 @@ const PortfolioManager = () => {
               Portfolio Manager Dashboard
             </span>
           </div>
-          <div className="text-sm text-muted-foreground">
-            {selectedClient}
-          </div>
+          <div className="text-sm text-muted-foreground">{selectedClient}</div>
         </div>
       </header>
 
@@ -55,26 +60,42 @@ const PortfolioManager = () => {
           selectedClient={selectedClient}
           onSelectClient={setSelectedClient}
           isOpen={sidebarOpen}
+          // **2. Pass the required 'onClientsLoaded' prop to the sidebar**
+          // This fixes the crash.
           onClientsLoaded={setClients}
         />
 
         {/* Main Content */}
         <main className="flex-1 p-6 space-y-6">
-          {/* P&L Tracker */}
-          <PLTracker clientName={selectedClient} />
+          {/* Handle errors from the WebSocket connection */}
+          {error && <div className="text-red-500 font-bold">Error: {error}</div>}
 
-          {/* Chart and Risk Metrics */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <PositionChart clientName={selectedClient} />
-            </div>
-            <div>
-              <RiskMetrics clientName={selectedClient} />
-            </div>
-          </div>
-
-          {/* AI Insights */}
-          <AIInsights clientName={selectedClient} />
+          {/* Display a loading state while connecting and waiting for data */}
+          {!isConnected && !error && <div>Connecting to server and fetching portfolio...</div>}
+          
+          {/* Once connected, render the main dashboard */}
+          {isConnected && !error && (
+            <>
+              {clientPortfolio.length > 0 ? (
+                <>
+                  {/* Pass the live, filtered 'clientPortfolio' data to the children */}
+                  <PLTracker data={clientPortfolio} />
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="lg:col-span-2">
+                      <PositionChart data={clientPortfolio} />
+                    </div>
+                    <div>
+                      <RiskMetrics data={clientPortfolio} />
+                    </div>
+                  </div>
+                  <AIInsights clientName={selectedClient} />
+                </>
+              ) : (
+                // This message shows after connecting if the selected client has no data
+                <div>Connected. No positions found for client: {selectedClient}</div>
+              )}
+            </>
+          )}
         </main>
       </div>
     </div>
