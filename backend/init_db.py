@@ -5,7 +5,7 @@ from pathlib import Path
 
 def init_db():
     # Load environment variables
-    env_path = Path(__file__).resolve().parent.parent / ".env"
+    env_path = Path(__file__).resolve().parent / ".env"
     load_dotenv(env_path)
 
     # Connect to Snowflake
