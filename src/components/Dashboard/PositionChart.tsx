@@ -9,7 +9,7 @@ import {
   Tooltip,
 } from "recharts";
 import { Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface DataPoint {
   time: string;
@@ -41,37 +41,12 @@ const PositionChart = ({ clientName }: PositionChartProps) => {
     
     // Get current portfolio value
     try {
-      // Get client by name
-      const { data: clients } = await supabase
-        .from('clients')
-        .select('id')
-        .eq('name', clientName)
-        .single();
-
-      if (!clients) {
-        setLoading(false);
-        return;
-      }
-
-      // Get positions for client
-      const { data: positions } = await supabase
-        .from('positions')
-        .select('*')
-        .eq('client_id', clients.id);
-
-      // Get market data
-      const { data: marketData } = await supabase
-        .from('market_data')
-        .select('*');
-
-      let currentValue = 0;
-
-      positions?.forEach(position => {
-        const price = marketData?.find(m => m.ticker === position.ticker);
-        const currentPrice = price?.current_price || 0;
-        const marketValue = Number(position.quantity) * Number(currentPrice);
-        currentValue += marketValue;
+      const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+        method: 'POST',
+        body: JSON.stringify({ clientName })
       });
+
+      const currentValue = analysis?.totals?.market_value || 0;
       
       // Generate historical data points (simulated for demo)
       for (let i = 30; i >= 0; i--) {
@@ -93,34 +68,12 @@ const PositionChart = ({ clientName }: PositionChartProps) => {
 
   const updateData = async () => {
     try {
-      // Get client by name
-      const { data: clients } = await supabase
-        .from('clients')
-        .select('id')
-        .eq('name', clientName)
-        .single();
-
-      if (!clients) return;
-
-      // Get positions for client
-      const { data: positions } = await supabase
-        .from('positions')
-        .select('*')
-        .eq('client_id', clients.id);
-
-      // Get market data
-      const { data: marketData } = await supabase
-        .from('market_data')
-        .select('*');
-
-      let currentValue = 0;
-
-      positions?.forEach(position => {
-        const price = marketData?.find(m => m.ticker === position.ticker);
-        const currentPrice = price?.current_price || 0;
-        const marketValue = Number(position.quantity) * Number(currentPrice);
-        currentValue += marketValue;
+      const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+        method: 'POST',
+        body: JSON.stringify({ clientName })
       });
+
+      const currentValue = analysis?.totals?.market_value || 0;
       
       setData((prevData) => {
         const newData = [...prevData.slice(1)];

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown, Loader2 } from "lucide-react";
 import type { ClientSummary } from "@/types/portfolio";
-import { supabase } from "@/lib/supabase";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface DashboardSidebarProps {
   selectedClient: string;
@@ -28,53 +28,60 @@ const DashboardSidebar = ({
     try {
       setLoading(true);
       
-      // Fetch clients from Supabase
-      const { data: clients, error: clientsError } = await supabase
-        .from('clients')
-        .select('*')
-        .order('name');
+      const demoNames = [
+        "Quantum Capital Fund",
+        "Apex Growth Partners",
+        "Horizon Ventures",
+        "Custodian 1",
+        "Custodian 2",
+      ];
 
-      if (clientsError) throw clientsError;
-
-      // Fetch all positions and market data
-      const { data: positions, error: positionsError } = await supabase
-        .from('positions')
-        .select('*');
-
-      if (positionsError) throw positionsError;
-
-      const { data: marketData, error: marketError } = await supabase
-        .from('market_data')
-        .select('*');
-
-      if (marketError) throw marketError;
-
-      // Calculate portfolio summaries for each client
-      const clientSummaries: ClientSummary[] = clients.map((client) => {
-        const clientPositions = positions.filter(p => p.client_id === client.id);
-        
-        let totalValue = 0;
-        let totalCost = 0;
-
-        clientPositions.forEach(position => {
-          const price = marketData.find(m => m.ticker === position.ticker);
-          const currentPrice = price?.current_price || 0;
-          const marketValue = Number(position.quantity) * Number(currentPrice);
-          const costBasis = Number(position.quantity) * Number(position.cost_basis);
-          
-          totalValue += marketValue;
-          totalCost += costBasis;
+      // Try to fetch clients from backend
+      let baseClients;
+      try {
+        baseClients = await apiCall<any[]>(API_ENDPOINTS.getClients, {
+          method: 'GET'
         });
+      } catch {
+        // Fallback to demo data
+        baseClients = demoNames.map((name, idx) => ({
+          id: `demo-${idx}`,
+          name,
+          email: undefined,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }));
+      }
 
-        const totalPnL = totalValue - totalCost;
-        const performance = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
+      // Fetch portfolio analysis for each client
+      const clientSummaries: ClientSummary[] = await Promise.all(
+        baseClients.map(async (client) => {
+          try {
+            const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+              method: 'POST',
+              body: JSON.stringify({ clientName: client.name })
+            });
 
-        return {
-          ...client,
-          performance: parseFloat(performance.toFixed(2)),
-          value: `$${(totalValue / 1_000_000).toFixed(1)}M`,
-        } as ClientSummary;
-      });
+            const totalValue = analysis?.totals?.market_value || 0;
+            const totalPnL = analysis?.totals?.pnl || 0;
+            const totalCost = totalValue - totalPnL;
+            const performance = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
+
+            return {
+              ...client,
+              performance: parseFloat(performance.toFixed(2)),
+              value: `$${(totalValue / 1_000_000).toFixed(1)}M`,
+            } as ClientSummary;
+          } catch (error) {
+            console.error(`Error loading portfolio for ${client.name}:`, error);
+            return {
+              ...client,
+              performance: 0,
+              value: "$0.0M",
+            } as ClientSummary;
+          }
+        })
+      );
 
       setClients(clientSummaries);
       onClientsLoaded(clientSummaries);

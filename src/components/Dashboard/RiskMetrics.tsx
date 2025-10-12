@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { AlertTriangle, TrendingUp, Activity, Loader2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { supabase } from "@/lib/supabase";
+import { API_ENDPOINTS, apiCall } from "@/config/api";
 
 interface Metric {
   label: string;
@@ -26,56 +26,28 @@ const RiskMetrics = ({ clientName }: RiskMetricsProps) => {
   const calculateRiskMetrics = async () => {
     try {
       setLoading(true);
-      
-      // Get client by name
-      const { data: clients } = await supabase
-        .from('clients')
-        .select('id')
-        .eq('name', clientName)
-        .single();
+      const analysis = await apiCall<any>(API_ENDPOINTS.analyzePortfolio, {
+        method: 'POST',
+        body: JSON.stringify({ clientName })
+      });
 
-      if (!clients) {
-        setLoading(false);
-        return;
-      }
-
-      // Get positions for client
-      const { data: positions } = await supabase
-        .from('positions')
-        .select('*')
-        .eq('client_id', clients.id);
-
-      // Get market data
-      const { data: marketData } = await supabase
-        .from('market_data')
-        .select('*');
-
-      const positionAnalysis = positions?.map(position => {
-        const price = marketData?.find(m => m.ticker === position.ticker);
-        const currentPrice = price?.current_price || 0;
-        const marketValue = Number(position.quantity) * Number(currentPrice);
-        const costBasis = Number(position.quantity) * Number(position.cost_basis);
-        const pnl = marketValue - costBasis;
-        
-        return { marketValue, pnl };
-      }) || [];
-
-      const totalValue = positionAnalysis.reduce((sum, p) => sum + p.marketValue, 0);
-      const totalPnL = positionAnalysis.reduce((sum, p) => sum + p.pnl, 0);
+      const positions = analysis?.positions || [];
+      const totalValue = analysis?.totals?.market_value || 0;
       
       // Calculate VaR (95% confidence, simplified)
-      const pnlValues = positionAnalysis.map(p => p.pnl);
+      const pnlValues = positions.map((p: any) => p.pnl || 0);
       const sortedPnL = [...pnlValues].sort((a, b) => a - b);
       const varIndex = Math.floor(sortedPnL.length * 0.05);
       const var95 = Math.abs(sortedPnL[varIndex] || 0);
 
       // Calculate Sharpe Ratio (simplified using P&L)
-      const avgReturn = pnlValues.reduce((a, b) => a + b, 0) / (pnlValues.length || 1);
-      const variance = pnlValues.reduce((sum, val) => sum + Math.pow(val - avgReturn, 2), 0) / (pnlValues.length || 1);
+      const avgReturn = pnlValues.reduce((a, b) => a + b, 0) / pnlValues.length;
+      const variance = pnlValues.reduce((sum, val) => sum + Math.pow(val - avgReturn, 2), 0) / pnlValues.length;
       const stdDev = Math.sqrt(variance);
       const sharpeRatio = stdDev > 0 ? avgReturn / stdDev : 0;
 
       // Calculate Max Drawdown
+      const totalPnL = analysis?.totals?.pnl || 0;
       const totalCost = totalValue - totalPnL;
       const maxDrawdown = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
 
