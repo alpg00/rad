@@ -7,12 +7,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- [UNCHANGED] Alpaca/Snowflake Configuration ---
-# This part is fine and doesn't need changes.
-
 def get_snowflake_connection():
     """Get a connection to Snowflake"""
-    # This helper function correctly connects to Snowflake.
+    # connects to snowflake
     return sf.connect(
         user=os.getenv('SF_USER'),
         password=os.getenv('SF_PASSWORD'),
@@ -25,7 +22,7 @@ def get_snowflake_connection():
 
 def get_tracked_symbols():
     """Get all symbols from the positions table in Snowflake"""
-    # This helper correctly fetches the symbols your application needs to track.
+    # fetch the symbols app needs to track
     conn = get_snowflake_connection()
     try:
         with conn.cursor() as cur:
@@ -34,15 +31,14 @@ def get_tracked_symbols():
     finally:
         conn.close()
 
-# --- [CORRECTED] Core Data Functions ---
+# core data functions
 
 async def update_price_in_snowflake(symbol: str, price: float, bid: float = None, ask: float = None):
     """Update price data for a given symbol in the Snowflake database."""
-    # This function's database logic remains the same.
     try:
         conn = get_snowflake_connection()
         with conn.cursor() as cur:
-            # MERGE statement for the PRICES table
+            # merge statement for the prices table
             sql_merge_prices = """
                 MERGE INTO RAD_DB.PUBLIC.PRICES p
                 USING (SELECT %s AS SYMBOL, %s AS BID, %s AS ASK, %s AS PRICE) s
@@ -55,7 +51,7 @@ async def update_price_in_snowflake(symbol: str, price: float, bid: float = None
             """
             cur.execute(sql_merge_prices, (symbol, bid or price, ask or price, price))
             
-            # Update the corresponding position's LAST_PRICE and LAST_TS
+            # update corresponding position's LAST_PRICE and LAST_TS
             sql_update_positions = """
                 UPDATE RAD_DB.PUBLIC.POSITIONS
                 SET LAST_PRICE = %s, LAST_TS = CURRENT_TIMESTAMP()
@@ -80,7 +76,7 @@ async def start_market_data_stream():
 
     default_symbols = ['AAPL', 'MSFT', 'GOOGL']
 
-    while True: # Main reconnection loop
+    while True: # main reconnection loop
         try:
             symbols = get_tracked_symbols() or default_symbols
             if not symbols:
@@ -91,7 +87,7 @@ async def start_market_data_stream():
             print(f"Attempting to stream market data for symbols: {symbols}")
 
             async with websockets.connect(url, ping_interval=20) as ws:
-                # 1. Authenticate with Alpaca
+                # authenticate with Alpaca
                 print("Authenticating with Alpaca...")
                 await ws.send(json.dumps({
                     "action": "auth",
@@ -102,7 +98,7 @@ async def start_market_data_stream():
                 if not (isinstance(auth_resp, list) and any(m.get("T") == "success" for m in auth_resp)):
                     raise Exception(f"Alpaca authentication failed: {auth_resp}")
 
-                # 2. Subscribe to trades and quotes for the symbols
+                # subscribe to trades and quotes for the symbols
                 print("Subscribing to symbols...")
                 await ws.send(json.dumps({
                     "action": "subscribe",
@@ -110,7 +106,7 @@ async def start_market_data_stream():
                     "quotes": symbols
                 }))
                 
-                # 3. Main message processing loop
+                # main message processing loop
                 while True:
                     msg = await ws.recv()
                     updates = json.loads(msg)
@@ -120,17 +116,17 @@ async def start_market_data_stream():
                         symbol = update.get("S")
                         price, bid, ask = None, None, None
 
-                        if msg_type == "q": # Quote update
+                        if msg_type == "q": # quote update
                             bid = update.get("bp")
                             ask = update.get("ap")
                             if bid and ask:
                                 price = (bid + ask) / 2
-                        elif msg_type == "t": # Trade update
+                        elif msg_type == "t": # trade update
                             price = update.get("p")
                         
                         if price and symbol:
-                            # The ONLY action is to update the database.
-                            # Broadcasting is handled by app.py.
+                            # update the database
+                            # broadcasting handled by app.py
                             await update_price_in_snowflake(symbol=symbol, price=price, bid=bid, ask=ask)
 
         except Exception as e:
@@ -158,5 +154,5 @@ async def start_position_tracking():
             if 'conn' in locals() and conn:
                 conn.close()
         
-        # This task runs every minute to catch any updates.
+        # this runs every minute to catch updates
         await asyncio.sleep(20)

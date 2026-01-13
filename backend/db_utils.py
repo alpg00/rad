@@ -26,7 +26,7 @@ def with_retry(max_retries: int = 3, initial_delay: float = 1.0):
                     if attempt < max_retries - 1:
                         logger.warning(f"Database operation failed, attempt {attempt + 1}/{max_retries}: {e}")
                         await asyncio.sleep(delay)
-                        delay *= 2  # Exponential backoff
+                        delay *= 2  # exponential backoff
                     continue
                 except Exception as e:
                     logger.error(f"Unexpected error in database operation: {e}")

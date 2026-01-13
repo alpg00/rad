@@ -1,4 +1,4 @@
-# RAD backend - FINAL CORRECTED VERSION
+# rad backend
 from __future__ import annotations
 import os, io, json, time, asyncio, pandas as pd
 import traceback
@@ -14,11 +14,11 @@ from pathlib import Path
 
 from market_data import start_market_data_stream, start_position_tracking
 
-# --- Load Environment Variables ---
+# load env vars
 env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(env_path)
 
-# --- Environment Configuration ---
+# env configuration
 SF_ACCOUNT   = os.getenv("SF_ACCOUNT")
 SF_USER      = os.getenv("SF_USER")
 SF_PASSWORD  = os.getenv("SF_PASSWORD")
@@ -31,16 +31,15 @@ ALPACA_KEY_ID     = os.getenv("ALPACA_KEY_ID")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 ALPACA_DEMO       = os.getenv("ALPACA_DEMO", "1") == "1"
 
-# --- Main FastAPI App Instance ---
+# main fastapi instance
 app = FastAPI(title="RAD — Snowflake Backend", version="1.0.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"]
 )
 
-# --- FIX #1: Robust JSON Converter ---
-# This helper function handles special data types from the database like
-# datetime objects and Decimal numbers, preventing the JSON serialization crash.
+# this helper function handles special data types from the database like
+# datetime objects and decimal numbers
 def json_converter(o):
     if isinstance(o, (datetime, date)):
         return o.isoformat()
@@ -48,7 +47,7 @@ def json_converter(o):
         return float(o)
     raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
 
-# --- WebSocket Connection Manager ---
+# websocket connection manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, List[WebSocket]] = {}
@@ -80,7 +79,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- Snowflake & Data Helpers ---
+# snowflake
 def sf_conn():
     return sf.connect(user=SF_USER, password=SF_PASSWORD, account=SF_ACCOUNT, role=SF_ROLE, warehouse=SF_WAREHOUSE, database=SF_DATABASE, schema=SF_SCHEMA)
 def run_sql(sql: str, params=None, fetch=True):
@@ -146,7 +145,7 @@ def get_symbols():
     rows=run_sql(f"SELECT DISTINCT SYMBOL FROM {SF_DATABASE}.{SF_SCHEMA}.POSITIONS WHERE SYMBOL IS NOT NULL")
     return [r[0] for r in rows] if rows else []
 
-# --- Main WebSocket Endpoint ---
+# main websocket endpoint
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
     await manager.connect(websocket, client_id)
@@ -164,7 +163,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     finally:
         manager.disconnect(websocket, client_id)
 
-# --- HTTP API Routes ---
+# http api routes
 class ClientRequest(BaseModel): clientName: Optional[str] = None
 @app.get("/api/clients")
 async def get_clients_api():
@@ -179,7 +178,7 @@ async def analyze_portfolio_api(request: ClientRequest):
 async def get_portfolio_insights(request: ClientRequest):
     return {"insights": {"comment": "AI insights are not fully configured yet."}}
 
-# --- FIX #2: Corrected the path for the ingest endpoint ---
+# corrected the path for ingest endpoint
 @app.post("/api/ingest-positions")
 async def ingest_positions(file: UploadFile = File(...), clientName: str = Form(None)):
     content = await file.read()
@@ -188,11 +187,11 @@ async def ingest_positions(file: UploadFile = File(...), clientName: str = Form(
     ingested_account_id = std['ACCOUNT'].unique()[0] if not std.empty and 'ACCOUNT' in std.columns else None
     print(f"\n--- INGESTION DEBUG: Standardized DataFrame Head ---\n{std.head()}\n--------------------------------------------------\n")
     upsert_positions(std)
-    # Re-evaluate flags after ingesting new data
+    # re-evaluate flags after ingesting new data
     evaluate_flags_sql()
     return {"ok": True, "rows": len(std), "ingestedAccountId": ingested_account_id}
 
-# --- Price Update Loop (More Efficient Version) ---
+# price update loop
 async def mock_price_loop():
     while True:
         await asyncio.sleep(1)
@@ -200,21 +199,21 @@ async def mock_price_loop():
         symbols = get_symbols()
         if not symbols: continue
 
-        # --- FIX #3: More efficient price update logic ---
-        # Build one single MERGE statement to update all prices in one go.
+        # price update logic
+        # build one single merge statement to update all prices in one go
         update_values = []
         for sym in symbols:
-            # This logic can be simplified as we are just mocking
+            # this logic can be simplified (just mocking rn)
             price = round((100 + (time.time() % 10)) * (1 + (hash(sym) % 100) / 1000), 2)
             run_sql(f"UPDATE {SF_DATABASE}.{SF_SCHEMA}.POSITIONS SET LAST_PRICE={price}, LAST_TS=TO_TIMESTAMP_NTZ('{now_ts}') WHERE SYMBOL='{sym}';", fetch=False)
         
-        # After all prices are updated, evaluate flags and broadcast
+        # after all prices are updated, evaluate flags and broadcast
         evaluate_flags_sql()
         snapshot_data = await _snapshot_data()
         flags_data = await _flags_data()
         await manager.broadcast_snapshot(snapshot_data, flags_data)
 
-# --- Application Startup ---
+# app startup
 @app.on_event("startup")
 async def startup_event():
     print("[app] Starting up...")

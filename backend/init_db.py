@@ -4,11 +4,11 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 def init_db():
-    # Load environment variables
+    # load environment variables
     env_path = Path(__file__).resolve().parent.parent / ".env"
     load_dotenv(env_path)
 
-    # Connect to Snowflake
+    # connect to snowflake
     conn = sf.connect(
         user=os.getenv('SF_USER'),
         password=os.getenv('SF_PASSWORD'),
@@ -20,11 +20,11 @@ def init_db():
     try:
         cur = conn.cursor()
         
-        # Read and execute schema
+        # read and execute schema
         with open('rad_schema.sql', 'r') as f:
             sql = f.read()
             
-        # Split and execute statements
+        # split and execute statements
         for stmt in sql.split(';'):
             if stmt.strip():
                 print(f'Executing: {stmt[:100]}...')
